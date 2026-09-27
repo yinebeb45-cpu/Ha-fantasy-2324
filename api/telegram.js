@@ -278,12 +278,12 @@ module.exports = async function handler(req, res) {
           reply_markup: {
             inline_keyboard: [[
               {
-                text: '✅ Approve Deposit',
+                text: ' 👏 Approve Deposit',
                 callback_data:
                   `approve_dep_${user.id}_${amount}`
               },
               {
-                text: '❌ Reject',
+                text: ' 🖕🏿 Reject',
                 callback_data:
                   `reject_dep_${user.id}_${amount}`
               }
