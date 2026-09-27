@@ -42,6 +42,7 @@ async function telegram(method, body) {
   return result;
 }
 
+
 /* =========================================================
    WALLET
 ========================================================= */
@@ -193,7 +194,10 @@ function userLabel(user) {
 
 module.exports = async function handler(req, res) {
 
-  /* Health check */
+  /* =======================================================
+     HEALTH CHECK
+  ======================================================= */
+
   if (req.method === 'GET') {
     return res.status(200).json({
       ok: true,
@@ -221,6 +225,54 @@ module.exports = async function handler(req, res) {
       'TELEGRAM UPDATE:',
       JSON.stringify(update, null, 2)
     );
+
+
+    /* =====================================================
+       TEMPORARY /TEST DIAGNOSTIC
+       
+       This tells us the exact Telegram chat ID.
+    ===================================================== */
+
+    if (
+      update.message &&
+      update.message.text &&
+      update.message.text.trim() === '/test'
+    ) {
+
+      const chat = update.message.chat;
+      const from = update.message.from;
+
+      const chatTitle =
+        chat.title ||
+        `${chat.first_name || ''} ${chat.last_name || ''}`.trim() ||
+        'Unknown';
+
+      const diagnosticMessage =
+        `🔧 HA FANTASY WEBHOOK TEST\n\n` +
+        `✅ Telegram reached Vercel successfully.\n\n` +
+        `📌 Chat ID:\n` +
+        `${chat.id}\n\n` +
+        `📌 Chat Type:\n` +
+        `${chat.type}\n\n` +
+        `📌 Chat Name:\n` +
+        `${chatTitle}\n\n` +
+        `👤 Sender ID:\n` +
+        `${from?.id || 'Unknown'}\n\n` +
+        `🤖 Backend:\n` +
+        `Vercel /api/telegram\n\n` +
+        `Copy the Chat ID above.`;
+
+      await telegram('sendMessage', {
+        chat_id: chat.id,
+        text: diagnosticMessage
+      });
+
+      return res.status(200).json({
+        ok: true,
+        diagnostic: true,
+        chat_id: chat.id
+      });
+    }
 
 
     /* =====================================================
@@ -261,6 +313,7 @@ module.exports = async function handler(req, res) {
       if (data.type === 'DEPOSIT_SUBMISSION') {
 
         const amount = Number(data.amount);
+
         const receipt = String(
           data.receipt || ''
         );
@@ -340,367 +393,4 @@ module.exports = async function handler(req, res) {
           );
 
         const notice =
-          `💸 *NEW WITHDRAWAL REQUEST*\n\n` +
-          `👤 *User:* ${userLabel(user)}\n` +
-          `🆔 *Telegram ID:* \`${user.id}\`\n` +
-          `💵 *Amount:* *${amount} ETB*\n` +
-          `🏦 *Method:* ${method}\n` +
-          `👤 *Account Name:* ${accountName}\n` +
-          `🔢 *Account/Phone:* \`${accountNo}\``;
-
-        await telegram('sendMessage', {
-          chat_id: ADMIN_CHAT_ID,
-          text: notice,
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[
-              {
-                text: '✅ Mark Paid',
-                callback_data:
-                  `paid_wit_${user.id}_${amount}`
-              },
-              {
-                text: '❌ Reject',
-                callback_data:
-                  `reject_wit_${user.id}_${amount}`
-              }
-            ]]
-          }
-        });
-
-        await telegram('sendMessage', {
-          chat_id: user.id,
-          text:
-            '💸 Withdrawal request received.\n\n' +
-            'Management will process it shortly.'
-        });
-      }
-
-      return res.status(200).json({
-        ok: true
-      });
-    }
-
-
-    /* =====================================================
-       ADMIN BUTTON CALLBACKS
-    ===================================================== */
-
-    if (update.callback_query) {
-
-      const query = update.callback_query;
-
-      /*
-       * SECURITY:
-       * Only callbacks originating from the configured
-       * admin chat can approve/reject wallet requests.
-       */
-
-      const callbackChatId =
-        String(
-          query.message?.chat?.id || ''
-        );
-
-      if (callbackChatId !== ADMIN_CHAT_ID) {
-
-        await telegram('answerCallbackQuery', {
-          callback_query_id: query.id,
-          text: 'Unauthorized',
-          show_alert: true
-        });
-
-        return res.status(200).json({
-          ok: true
-        });
-      }
-
-      const parts =
-        String(query.data || '').split('_');
-
-      const action = parts[0];
-      const type = parts[1];
-      const userId = parts[2];
-      const amount = parts[3];
-
-      if (!userId || !amount) {
-
-        await telegram('answerCallbackQuery', {
-          callback_query_id: query.id,
-          text: 'Invalid request',
-          show_alert: true
-        });
-
-        return res.status(200).json({
-          ok: true
-        });
-      }
-
-
-      /* ===================================================
-         APPROVE DEPOSIT
-      =================================================== */
-
-      if (
-        action === 'approve' &&
-        type === 'dep'
-      ) {
-
-        try {
-
-          const newBalance =
-            await approveDeposit(
-              userId,
-              amount
-            );
-
-          await telegram(
-            'answerCallbackQuery',
-            {
-              callback_query_id: query.id,
-              text: 'Deposit approved ✅'
-            }
-          );
-
-          await telegram(
-            'sendMessage',
-            {
-              chat_id: userId,
-              text:
-                `🎉 Your deposit of *${amount} ETB* was approved!\n\n` +
-                `💰 New balance: *${newBalance} ETB*`,
-              parse_mode: 'Markdown'
-            }
-          );
-
-          await telegram(
-            'editMessageText',
-            {
-              chat_id:
-                query.message.chat.id,
-
-              message_id:
-                query.message.message_id,
-
-              text:
-                `${query.message.text || ''}` +
-                `\n\n✅ STATUS: APPROVED (+${amount} ETB)`,
-
-              parse_mode: 'Markdown'
-            }
-          );
-
-        } catch (error) {
-
-          console.error(error);
-
-          await telegram(
-            'answerCallbackQuery',
-            {
-              callback_query_id: query.id,
-              text:
-                `Error: ${error.message}`,
-              show_alert: true
-            }
-          );
-        }
-
-        return res.status(200).json({
-          ok: true
-        });
-      }
-
-
-      /* ===================================================
-         REJECT DEPOSIT
-      =================================================== */
-
-      if (
-        action === 'reject' &&
-        type === 'dep'
-      ) {
-
-        await telegram(
-          'answerCallbackQuery',
-          {
-            callback_query_id: query.id,
-            text: 'Deposit rejected ❌'
-          }
-        );
-
-        await telegram(
-          'sendMessage',
-          {
-            chat_id: userId,
-            text:
-              '❌ Your deposit could not be verified.\n\n' +
-              'Please contact Ha Fantasy support.'
-          }
-        );
-
-        await telegram(
-          'editMessageText',
-          {
-            chat_id:
-              query.message.chat.id,
-
-            message_id:
-              query.message.message_id,
-
-            text:
-              `${query.message.text || ''}` +
-              '\n\n❌ STATUS: REJECTED'
-          }
-        );
-
-        return res.status(200).json({
-          ok: true
-        });
-      }
-
-
-      /* ===================================================
-         MARK WITHDRAWAL PAID
-      =================================================== */
-
-      if (
-        action === 'paid' &&
-        type === 'wit'
-      ) {
-
-        try {
-
-          const newBalance =
-            await approveWithdrawal(
-              userId,
-              amount
-            );
-
-          await telegram(
-            'answerCallbackQuery',
-            {
-              callback_query_id: query.id,
-              text: 'Withdrawal marked as paid ✅'
-            }
-          );
-
-          await telegram(
-            'sendMessage',
-            {
-              chat_id: userId,
-              text:
-                `🎉 Withdrawal of *${amount} ETB* has been paid!\n\n` +
-                `💰 Remaining balance: *${newBalance} ETB*`,
-              parse_mode: 'Markdown'
-            }
-          );
-
-          await telegram(
-            'editMessageText',
-            {
-              chat_id:
-                query.message.chat.id,
-
-              message_id:
-                query.message.message_id,
-
-              text:
-                `${query.message.text || ''}` +
-                `\n\n✅ STATUS: PAID OUT (−${amount} ETB)`,
-
-              parse_mode: 'Markdown'
-            }
-          );
-
-        } catch (error) {
-
-          console.error(error);
-
-          await telegram(
-            'answerCallbackQuery',
-            {
-              callback_query_id: query.id,
-              text:
-                `Error: ${error.message}`,
-              show_alert: true
-            }
-          );
-        }
-
-        return res.status(200).json({
-          ok: true
-        });
-      }
-
-
-      /* ===================================================
-         REJECT WITHDRAWAL
-      ===================================================== */
-
-      if (
-        action === 'reject' &&
-        type === 'wit'
-      ) {
-
-        await telegram(
-          'answerCallbackQuery',
-          {
-            callback_query_id: query.id,
-            text: 'Withdrawal rejected ❌'
-          }
-        );
-
-        await telegram(
-          'sendMessage',
-          {
-            chat_id: userId,
-            text:
-              '❌ Your withdrawal request was rejected.'
-          }
-        );
-
-        await telegram(
-          'editMessageText',
-          {
-            chat_id:
-              query.message.chat.id,
-
-            message_id:
-              query.message.message_id,
-
-            text:
-              `${query.message.text || ''}` +
-              '\n\n❌ STATUS: REJECTED'
-          }
-        );
-
-        return res.status(200).json({
-          ok: true
-        });
-      }
-
-      return res.status(200).json({
-        ok: true
-      });
-    }
-
-
-    return res.status(200).json({
-      ok: true
-    });
-
-  } catch (error) {
-
-    console.error(
-      'Ha Fantasy webhook error:',
-      error
-    );
-
-    /*
-     * Return 200 so Telegram doesn't repeatedly retry
-     * an update that our application failed to process.
-     */
-    return res.status(200).json({
-      ok: false
-    });
-  }
-};
+          `💸 *NEW WITHDRAWAL REQUEST*\
