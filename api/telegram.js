@@ -719,88 +719,70 @@ module.exports = async function handler(req, res) {
         ok: true
       });
     }
+/* =====================================================
+   NORMAL TELEGRAM MESSAGE
+   TEMPORARY CONNECTION TEST
+===================================================== */
 
-    /* =====================================================
-       NORMAL TELEGRAM MESSAGE
-       TEST / ADMIN GROUP
-    ===================================================== */
+if (update.message) {
 
-    if (update.message) {
+  const message = update.message;
 
-      const message = update.message;
+  const chatId = String(
+    message.chat?.id || ''
+  );
 
-      const chatId =
-        String(message.chat?.id || '');
+  const text = String(
+    message.text || ''
+  ).trim();
 
-      const text =
-        String(message.text || '').trim();
+  console.log('=================================');
+  console.log('TELEGRAM MESSAGE RECEIVED');
+  console.log('CHAT ID:', chatId);
+  console.log('FROM:', message.from?.id);
+  console.log('TEXT:', text);
+  console.log('EXPECTED ADMIN CHAT:', ADMIN_CHAT_ID);
+  console.log('=================================');
 
-      console.log(
-        'Telegram message received:',
-        {
-          chatId,
-          from: message.from?.id,
-          text
-        }
-      );
+  try {
 
-      /*
-       * Only respond inside the configured
-       * Ha Fantasy admin group.
-       */
+    const result = await tg(
+      'sendMessage',
+      {
+        chat_id: chatId,
 
-      if (chatId === ADMIN_CHAT_ID) {
+        text:
+`🤖 HA FANTASY BOT TEST
 
-        if (
-          text.toLowerCase() ===
-          'test ha fantasy'
-        ) {
+✅ Telegram → Vercel works
+✅ Vercel received this message
+✅ Bot can send messages
 
-          const result = await tg(
-            'sendMessage',
-            {
-              chat_id: chatId,
-              text:
-`✅ HA FANTASY BOT TEST PASSED
+Chat ID:
+${chatId}
 
-Telegram → Vercel → Telegram is working.`
-            }
-          );
-
-          console.log(
-            'Telegram test response:',
-            result
-          );
-        }
-
-        if (text === '/start') {
-
-          const result = await tg(
-            'sendMessage',
-            {
-              chat_id: chatId,
-              text:
-`🤖 Ha Fantasy Admin Bot
-
-✅ Bot is connected
-✅ Webhook is working
-✅ Admin group detected
-
-Wallet requests will appear here automatically.`
-            }
-          );
-
-          console.log(
-            'Telegram /start response:',
-            result
-          );
-        }
+Your message:
+${text || '(no text)'}`
       }
+    );
 
-      return res.status(200).json({
-        ok: true
-      });
-    }
+    console.log(
+      'TELEGRAM SEND RESULT:',
+      JSON.stringify(result)
+    );
+
+  } catch (error) {
+
+    console.error(
+      'TELEGRAM SEND ERROR:',
+      error
+    );
+  }
+
+  return res.status(200).json({
+    ok: true
+  });
+}
 
     /* =====================================================
        TELEGRAM WEBAPP SEND DATA
