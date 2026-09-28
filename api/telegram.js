@@ -10,7 +10,11 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 const TG = `https://api.telegram.org/bot${BOT_TOKEN}`;
-
+console.log("BOT TOKEN CHECK:", {
+  exists: !!BOT_TOKEN,
+  length: BOT_TOKEN ? BOT_TOKEN.length : 0,
+  startsCorrectly: BOT_TOKEN ? /^\d+:[A-Za-z0-9_-]+$/.test(BOT_TOKEN) : false
+});
 function db() {
   return createClient(
     SUPABASE_URL,
