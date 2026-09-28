@@ -9,15 +9,6 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 const TG_BASE = 'https://api.telegram.org/bot' + BOT_TOKEN;
 
-// Safe diagnostics
-console.log('BOT TOKEN CHECK:', {
-  exists: !!BOT_TOKEN,
-  length: BOT_TOKEN.length,
-  prefix: BOT_TOKEN ? BOT_TOKEN.slice(0, 10) : 'NONE',
-  suffix: BOT_TOKEN ? BOT_TOKEN.slice(-6) : 'NONE',
-  startsCorrectly: /^\d+:[A-Za-z0-9_-]+$/.test(BOT_TOKEN)
-});
-
 function db() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 }
@@ -38,8 +29,6 @@ async function tg(method, body = {}) {
   });
 
   const data = await response.json();
-
-  console.log('Telegram API ' + method + ':', JSON.stringify(data));
 
   if (!data.ok) {
     console.error('Telegram API error (' + method + '):', data);
@@ -598,34 +587,6 @@ module.exports = async function handler(req, res) {
           accountNo: data.accountNo
         });
         await sendWithdrawalRequest(request);
-      }
-
-      return res.status(200).json({ ok: true });
-    }
-
-    // TEMPORARY CONNECTION TEST
-    if (update.message) {
-      const message = update.message;
-      const chatId = String(message.chat && message.chat.id || '');
-      const text = String(message.text || '').trim();
-
-      console.log('=================================');
-      console.log('TELEGRAM MESSAGE RECEIVED');
-      console.log('CHAT ID:', chatId);
-      console.log('FROM:', message.from && message.from.id);
-      console.log('TEXT:', text);
-      console.log('EXPECTED ADMIN CHAT:', ADMIN_CHAT_ID);
-      console.log('=================================');
-
-      try {
-        const result = await tg('sendMessage', {
-          chat_id: chatId,
-          text: '🤖 HA FANTASY BOT TEST\n\n✅ Telegram → Vercel works\n✅ Vercel received this message\n✅ Bot can send messages\n\nChat ID:\n' + chatId + '\n\nYour message:\n' + (text || '(no text)')
-        });
-
-        console.log('TELEGRAM SEND RESULT:', JSON.stringify(result));
-      } catch (error) {
-        console.error('TELEGRAM SEND ERROR:', error);
       }
 
       return res.status(200).json({ ok: true });
