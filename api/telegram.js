@@ -7,9 +7,9 @@ const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID || '-1004468798532').trim
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-const TG_BASE = `https://api.telegram.org/bot${BOT_TOKEN}`;
+const TG_BASE = 'https://api.telegram.org/bot' + BOT_TOKEN;
 
-// Safe diagnostics (never logs the full token)
+// Safe diagnostics
 console.log('BOT TOKEN CHECK:', {
   exists: !!BOT_TOKEN,
   length: BOT_TOKEN.length,
@@ -27,7 +27,7 @@ function db() {
 ========================================================= */
 
 async function tg(method, body = {}) {
-  const url = `\( {TG_BASE}/ \){method}`;
+  const url = TG_BASE + '/' + method;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -39,10 +39,10 @@ async function tg(method, body = {}) {
 
   const data = await response.json();
 
-  console.log(`Telegram API ${method}:`, JSON.stringify(data));
+  console.log('Telegram API ' + method + ':', JSON.stringify(data));
 
   if (!data.ok) {
-    console.error(`Telegram API error (${method}):`, data);
+    console.error('Telegram API error (' + method + '):', data);
   }
 
   return data;
@@ -64,8 +64,8 @@ function verifyTelegramInitData(initData) {
     params.delete('hash');
 
     const dataCheckString = [...params.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, value]) => `\( {key}= \){value}`)
+      .sort(function(a, b) { return a[0].localeCompare(b[0]); })
+      .map(function(entry) { return entry[0] + '=' + entry[1]; })
       .join('\n');
 
     const secretKey = crypto
@@ -109,9 +109,9 @@ function userLabel(user) {
     .filter(Boolean)
     .join(' ');
 
-  const username = user.username ? `@${user.username}` : 'No username';
+  const username = user.username ? '@' + user.username : 'No username';
 
-  return `\( {name || 'Unknown'} ( \){username})`;
+  return (name || 'Unknown') + ' (' + username + ')';
 }
 
 /* =========================================================
@@ -191,7 +191,7 @@ async function createWalletRequest(data) {
     telegram_id: String(data.telegramId),
     user_name: data.userName || 'Manager',
     request_type: data.type,
-    amount,
+    amount: amount,
     method: data.method || 'telebirr',
     account_name: data.accountName || null,
     account_no: data.accountNo || null,
@@ -214,36 +214,30 @@ async function createWalletRequest(data) {
 ========================================================= */
 
 async function sendDepositRequest(request) {
-  const text = `🚨 NEW DEPOSIT REQUEST
-
-👤 User: ${request.user_name}
-🆔 Telegram ID: ${request.telegram_id}
-
-💵 Amount: ${request.amount} ETB
-
-📜 Telebirr Receipt:
-${String(request.receipt || 'No receipt provided').slice(0, 1500)}
-
-🆔 Request ID:
-${request.id}
-
-⏳ STATUS: PENDING`;
+  const text = '🚨 NEW DEPOSIT REQUEST\n\n' +
+    '👤 User: ' + request.user_name + '\n' +
+    '🆔 Telegram ID: ' + request.telegram_id + '\n\n' +
+    '💵 Amount: ' + request.amount + ' ETB\n\n' +
+    '📜 Telebirr Receipt:\n' +
+    String(request.receipt || 'No receipt provided').slice(0, 1500) + '\n\n' +
+    '🆔 Request ID:\n' + request.id + '\n\n' +
+    '⏳ STATUS: PENDING';
 
   return tg('sendMessage', {
     chat_id: ADMIN_CHAT_ID,
-    text,
+    text: text,
     reply_markup: {
       inline_keyboard: [
         [
           {
             text: '✅ APPROVE DEPOSIT',
-            callback_data: `approve_dep_${request.id}`
+            callback_data: 'approve_dep_' + request.id
           }
         ],
         [
           {
             text: '❌ REJECT DEPOSIT',
-            callback_data: `reject_dep_${request.id}`
+            callback_data: 'reject_dep_' + request.id
           }
         ]
       ]
@@ -256,41 +250,31 @@ ${request.id}
 ========================================================= */
 
 async function sendWithdrawalRequest(request) {
-  const text = `💸 NEW WITHDRAWAL REQUEST
-
-👤 User: ${request.user_name}
-🆔 Telegram ID: ${request.telegram_id}
-
-💵 Amount: ${request.amount} ETB
-
-🏦 Method: ${String(request.method || 'telebirr').toUpperCase()}
-
-👤 Account Name:
-${request.account_name || '—'}
-
-📱 Account / Phone:
-${request.account_no || '—'}
-
-🆔 Request ID:
-${request.id}
-
-⏳ STATUS: PENDING`;
+  const text = '💸 NEW WITHDRAWAL REQUEST\n\n' +
+    '👤 User: ' + request.user_name + '\n' +
+    '🆔 Telegram ID: ' + request.telegram_id + '\n\n' +
+    '💵 Amount: ' + request.amount + ' ETB\n\n' +
+    '🏦 Method: ' + String(request.method || 'telebirr').toUpperCase() + '\n\n' +
+    '👤 Account Name:\n' + (request.account_name || '—') + '\n\n' +
+    '📱 Account / Phone:\n' + (request.account_no || '—') + '\n\n' +
+    '🆔 Request ID:\n' + request.id + '\n\n' +
+    '⏳ STATUS: PENDING';
 
   return tg('sendMessage', {
     chat_id: ADMIN_CHAT_ID,
-    text,
+    text: text,
     reply_markup: {
       inline_keyboard: [
         [
           {
             text: '✅ MARK PAID',
-            callback_data: `paid_wit_${request.id}`
+            callback_data: 'paid_wit_' + request.id
           }
         ],
         [
           {
             text: '❌ REJECT WITHDRAWAL',
-            callback_data: `reject_wit_${request.id}`
+            callback_data: 'reject_wit_' + request.id
           }
         ]
       ]
@@ -327,7 +311,7 @@ async function rejectRequest(requestId) {
   if (error) throw error;
 
   if (request.status !== 'pending') {
-    throw new Error(`Request already processed: ${request.status}`);
+    throw new Error('Request already processed: ' + request.status);
   }
 
   const { error: updateError } = await sb
@@ -355,7 +339,7 @@ async function updateAdminMessage(query, statusText) {
   await tg('editMessageText', {
     chat_id: query.message.chat.id,
     message_id: query.message.message_id,
-    text: oldText + `\n\n${statusText}`,
+    text: oldText + '\n\n' + statusText,
     reply_markup: {
       inline_keyboard: []
     }
@@ -401,7 +385,7 @@ async function handleCallback(query) {
     return;
   }
 
-  /* DEPOSIT APPROVAL */
+  // DEPOSIT APPROVAL
   if (action === 'approve' && type === 'dep') {
     try {
       const result = await processRequest(requestId);
@@ -413,15 +397,10 @@ async function handleCallback(query) {
 
       await tg('sendMessage', {
         chat_id: result.telegram_id,
-        text: `🎉 DEPOSIT APPROVED
-
-💵 Amount: ${result.amount} ETB
-
-💰 New wallet balance:
-${result.new_balance} ETB`
+        text: '🎉 DEPOSIT APPROVED\n\n💵 Amount: ' + result.amount + ' ETB\n\n💰 New wallet balance:\n' + result.new_balance + ' ETB'
       });
 
-      await updateAdminMessage(query, `✅ STATUS: APPROVED (+${result.amount} ETB)`);
+      await updateAdminMessage(query, '✅ STATUS: APPROVED (+' + result.amount + ' ETB)');
     } catch (error) {
       console.error('Deposit approval error:', error);
       await tg('answerCallbackQuery', {
@@ -433,7 +412,7 @@ ${result.new_balance} ETB`
     return;
   }
 
-  /* DEPOSIT REJECTION */
+  // DEPOSIT REJECTION
   if (action === 'reject' && type === 'dep') {
     try {
       const request = await rejectRequest(requestId);
@@ -445,11 +424,7 @@ ${result.new_balance} ETB`
 
       await tg('sendMessage', {
         chat_id: request.telegram_id,
-        text: `❌ DEPOSIT REJECTED
-
-Your ${request.amount} ETB deposit could not be verified.
-
-Please contact Ha Fantasy support if you believe this was a mistake.`
+        text: '❌ DEPOSIT REJECTED\n\nYour ' + request.amount + ' ETB deposit could not be verified.\n\nPlease contact Ha Fantasy support if you believe this was a mistake.'
       });
 
       await updateAdminMessage(query, '❌ STATUS: REJECTED');
@@ -464,7 +439,7 @@ Please contact Ha Fantasy support if you believe this was a mistake.`
     return;
   }
 
-  /* WITHDRAWAL PAID */
+  // WITHDRAWAL PAID
   if (action === 'paid' && type === 'wit') {
     try {
       const result = await processRequest(requestId);
@@ -476,15 +451,10 @@ Please contact Ha Fantasy support if you believe this was a mistake.`
 
       await tg('sendMessage', {
         chat_id: result.telegram_id,
-        text: `💸 WITHDRAWAL COMPLETED
-
-💵 Amount: ${result.amount} ETB
-
-💰 Remaining balance:
-${result.new_balance} ETB`
+        text: '💸 WITHDRAWAL COMPLETED\n\n💵 Amount: ' + result.amount + ' ETB\n\n💰 Remaining balance:\n' + result.new_balance + ' ETB'
       });
 
-      await updateAdminMessage(query, `✅ STATUS: PAID OUT (-${result.amount} ETB)`);
+      await updateAdminMessage(query, '✅ STATUS: PAID OUT (-' + result.amount + ' ETB)');
     } catch (error) {
       console.error('Withdrawal payment error:', error);
       await tg('answerCallbackQuery', {
@@ -496,7 +466,7 @@ ${result.new_balance} ETB`
     return;
   }
 
-  /* WITHDRAWAL REJECT */
+  // WITHDRAWAL REJECT
   if (action === 'reject' && type === 'wit') {
     try {
       const request = await rejectRequest(requestId);
@@ -508,11 +478,7 @@ ${result.new_balance} ETB`
 
       await tg('sendMessage', {
         chat_id: request.telegram_id,
-        text: `❌ WITHDRAWAL REJECTED
-
-Your ${request.amount} ETB withdrawal request was rejected.
-
-Your wallet balance was not changed.`
+        text: '❌ WITHDRAWAL REJECTED\n\nYour ' + request.amount + ' ETB withdrawal request was rejected.\n\nYour wallet balance was not changed.'
       });
 
       await updateAdminMessage(query, '❌ STATUS: REJECTED — BALANCE UNCHANGED');
@@ -539,9 +505,9 @@ Your wallet balance was not changed.`
 
 module.exports = async function handler(req, res) {
 
-  /* ---------- HEALTH CHECK / GET WALLET ---------- */
+  // HEALTH CHECK / GET WALLET
   if (req.method === 'GET') {
-    const action = req.query?.action;
+    const action = req.query && req.query.action;
 
     if (action === 'wallet') {
       try {
@@ -581,7 +547,7 @@ module.exports = async function handler(req, res) {
     return res.status(200).send('Ha Fantasy wallet API OK');
   }
 
-  /* ---------- ONLY POST AFTER THIS POINT ---------- */
+  // ONLY POST AFTER THIS POINT
   if (req.method !== 'POST') {
     return res.status(405).json({
       ok: false,
@@ -592,13 +558,13 @@ module.exports = async function handler(req, res) {
   try {
     const update = req.body || {};
 
-    /* ---------- TELEGRAM CALLBACK QUERY ---------- */
+    // TELEGRAM CALLBACK QUERY
     if (update.callback_query) {
       await handleCallback(update.callback_query);
       return res.status(200).json({ ok: true });
     }
 
-    /* ---------- TELEGRAM WEBAPP DATA (must come before normal message) ---------- */
+    // TELEGRAM WEBAPP DATA
     if (update.message && update.message.web_app_data) {
       const message = update.message;
       const user = message.from;
@@ -606,7 +572,7 @@ module.exports = async function handler(req, res) {
       let data;
       try {
         data = JSON.parse(message.web_app_data.data);
-      } catch {
+      } catch (e) {
         return res.status(200).json({ ok: true });
       }
 
@@ -637,16 +603,16 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    /* ---------- TEMPORARY CONNECTION TEST (normal messages only) ---------- */
+    // TEMPORARY CONNECTION TEST
     if (update.message) {
       const message = update.message;
-      const chatId = String(message.chat?.id || '');
+      const chatId = String(message.chat && message.chat.id || '');
       const text = String(message.text || '').trim();
 
       console.log('=================================');
       console.log('TELEGRAM MESSAGE RECEIVED');
       console.log('CHAT ID:', chatId);
-      console.log('FROM:', message.from?.id);
+      console.log('FROM:', message.from && message.from.id);
       console.log('TEXT:', text);
       console.log('EXPECTED ADMIN CHAT:', ADMIN_CHAT_ID);
       console.log('=================================');
@@ -654,17 +620,7 @@ module.exports = async function handler(req, res) {
       try {
         const result = await tg('sendMessage', {
           chat_id: chatId,
-          text: `🤖 HA FANTASY BOT TEST
-
-✅ Telegram → Vercel works
-✅ Vercel received this message
-✅ Bot can send messages
-
-Chat ID:
-${chatId}
-
-Your message:
-${text || '(no text)'}`
+          text: '🤖 HA FANTASY BOT TEST\n\n✅ Telegram → Vercel works\n✅ Vercel received this message\n✅ Bot can send messages\n\nChat ID:\n' + chatId + '\n\nYour message:\n' + (text || '(no text)')
         });
 
         console.log('TELEGRAM SEND RESULT:', JSON.stringify(result));
@@ -675,7 +631,7 @@ ${text || '(no text)'}`
       return res.status(200).json({ ok: true });
     }
 
-    /* ---------- DIRECT HTML WALLET REQUEST ---------- */
+    // DIRECT HTML WALLET REQUEST
     if (update.action === 'wallet_request') {
       const initData = update.initData || '';
       const user = verifyTelegramInitData(initData);
@@ -722,8 +678,8 @@ ${text || '(no text)'}`
       const request = await createWalletRequest({
         telegramId: user.id,
         userName: [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Manager',
-        type,
-        amount,
+        type: type,
+        amount: amount,
         method: update.method || 'telebirr',
         accountName: update.accountName,
         accountNo: update.accountNo,
@@ -745,14 +701,13 @@ ${text || '(no text)'}`
       return res.status(200).json({
         ok: true,
         request_id: request.id,
-        message:
-          type === 'deposit'
-            ? 'Deposit request sent for approval.'
-            : 'Withdrawal request sent for processing.'
+        message: type === 'deposit'
+          ? 'Deposit request sent for approval.'
+          : 'Withdrawal request sent for processing.'
       });
     }
 
-    /* ---------- UNKNOWN POST ---------- */
+    // UNKNOWN POST
     return res.status(200).json({ ok: true });
 
   } catch (error) {
