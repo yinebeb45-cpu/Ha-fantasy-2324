@@ -493,6 +493,14 @@ async function handleCallback(query) {
 ========================================================= */
 
 module.exports = async function handler(req, res) {
+  // CORS — required so ha-fantasy.onrender.com can call this API
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
 
   // HEALTH CHECK / GET WALLET
   if (req.method === 'GET') {
