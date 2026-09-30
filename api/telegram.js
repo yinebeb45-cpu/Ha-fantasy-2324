@@ -320,125 +320,30 @@ async function sendWithdrawalRequest(request) {
 ========================================================= */
 
 async function processRequest(requestId) {
-  const sb = db();
-  // DB uses integer ids (1, 2, 6...) — NOT uuid
-  const idRaw = String(requestId).trim();
-  const idNum = Number(idRaw);
-  const idFilter = Number.isFinite(idNum) ? idNum : idRaw;
+  const { data, error } = await db().rpc('process_wallet_request', {
+    p_request_id: requestId
+  });
 
-  console.log('processRequest id=', idRaw, 'filter=', idFilter);
-
-  let { data: request, error: fetchErr } = await sb
-    .from('wallet_requests')
-    .select('*')
-    .eq('id', idFilter)
-    .maybeSingle();
-
-  // Fallback: scan pending rows by string id (avoids uuid cast issues)
-  if (fetchErr || !request) {
-    console.warn('eq(id) failed, scanning pending rows:', fetchErr && fetchErr.message);
-    const { data: rows, error: listErr } = await sb
-      .from('wallet_requests')
-      .select('*')
-      .eq('status', 'pending');
-    if (listErr) throw listErr;
-    request = (rows || []).find(function(r) {
-      return String(r.id) === idRaw;
-    });
-    if (!request) {
-      throw new Error(fetchErr ? fetchErr.message : ('Request not found: ' + idRaw));
-    }
-  }
-
-  const status = String(request.status || '').toLowerCase();
-  if (status !== 'pending') {
-    throw new Error('Request already processed: ' + request.status);
-  }
-
-  const amount = Number(request.amount || 0);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error('Invalid amount on request');
-  }
-
-  const telegramId = String(request.telegram_id);
-  const reqType = String(request.type || request.request_type || '').toLowerCase();
-
-  // Ensure wallet row exists
-  const wallet = await getWallet(telegramId, request.user_name || 'Manager');
-  const balance = Number(wallet.balance || 0);
-
-  let newBalance = balance;
-  let totalDeposits = Number(wallet.total_deposits || 0);
-  let totalWithdrawals = Number(wallet.total_withdrawals || 0);
-
-  if (reqType === 'deposit') {
-    newBalance = balance + amount;
-    totalDeposits = totalDeposits + amount;
-  } else if (reqType === 'withdrawal') {
-    if (balance < amount) {
-      throw new Error('Insufficient balance for withdrawal');
-    }
-    newBalance = balance - amount;
-    totalWithdrawals = totalWithdrawals + amount;
-  } else {
-    throw new Error('Unknown request type: ' + reqType);
-  }
-
-  const { error: walletErr } = await sb
-    .from('user_wallets')
-    .update({
-      balance: newBalance,
-      total_deposits: totalDeposits,
-      total_withdrawals: totalWithdrawals
-    })
-    .eq('telegram_id', telegramId);
-
-  if (walletErr) throw walletErr;
-
-  const newStatus = reqType === 'withdrawal' ? 'paid' : 'approved';
-  const { error: reqErr } = await sb
-    .from('wallet_requests')
-    .update({
-      status: newStatus,
-      processed_at: new Date().toISOString()
-    })
-    .eq('id', request.id)
-    .eq('status', 'pending');
-
-  if (reqErr) throw reqErr;
-
-  return {
-    telegram_id: telegramId,
-    amount: amount,
-    new_balance: newBalance,
-    type: reqType,
-    status: newStatus
-  };
+  if (error) throw error;
+  return data;
 }
+
+/* =========================================================
+   REJECT REQUEST
+========================================================= */
 
 async function rejectRequest(requestId) {
   const sb = db();
-  const idRaw = String(requestId).trim();
-  const idNum = Number(idRaw);
-  const idFilter = Number.isFinite(idNum) ? idNum : idRaw;
 
-  let { data: request, error } = await sb
+  const { data: request, error } = await sb
     .from('wallet_requests')
     .select('*')
-    .eq('id', idFilter)
-    .maybeSingle();
+    .eq('id', requestId)
+    .single();
 
-  if (error || !request) {
-    const { data: rows, error: listErr } = await sb
-      .from('wallet_requests')
-      .select('*')
-      .eq('status', 'pending');
-    if (listErr) throw listErr;
-    request = (rows || []).find(function(r) { return String(r.id) === idRaw; });
-    if (!request) throw new Error(error ? error.message : ('Request not found: ' + idRaw));
-  }
+  if (error) throw error;
 
-  if (String(request.status || '').toLowerCase() !== 'pending') {
+  if (request.status !== 'pending') {
     throw new Error('Request already processed: ' + request.status);
   }
 
@@ -448,12 +353,16 @@ async function rejectRequest(requestId) {
       status: 'rejected',
       processed_at: new Date().toISOString()
     })
-    .eq('id', request.id)
+    .eq('id', requestId)
     .eq('status', 'pending');
 
   if (updateError) throw updateError;
   return request;
 }
+
+/* =========================================================
+   EDIT ADMIN MESSAGE
+========================================================= */
 
 async function updateAdminMessage(query, statusText) {
   if (!query.message) return;
@@ -636,8 +545,6 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
-
-  console.log('Ha Fantasy API version: 2026-09-30-approve-v3');
 
   // HEALTH CHECK / GET WALLET
   if (req.method === 'GET') {
