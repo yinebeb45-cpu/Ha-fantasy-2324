@@ -3,83 +3,47 @@ const crypto = require('crypto');
 
 const BOT_TOKEN = (process.env.BOT_TOKEN || '').trim();
 const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID || '-1004468798532').trim();
-
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
 const TG_BASE = 'https://api.telegram.org/bot' + BOT_TOKEN;
 
 function db() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 }
 
-/* =========================================================
-   TELEGRAM API
-========================================================= */
-
-async function tg(method, body = {}) {
-  const url = TG_BASE + '/' + method;
-
-  const response = await fetch(url, {
+async function tg(method, body) {
+  body = body || {};
+  const response = await fetch(TG_BASE + '/' + method, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-
   const data = await response.json();
-
-  if (!data.ok) {
-    console.error('Telegram API error (' + method + '):', data);
-  }
-
+  if (!data.ok) console.error('Telegram API error (' + method + '):', data);
   return data;
 }
 
-/* =========================================================
-   TELEGRAM WEBAPP AUTHENTICATION
-========================================================= */
-
 function verifyTelegramInitData(initData) {
   if (!initData || !BOT_TOKEN) return null;
-
   try {
     const params = new URLSearchParams(initData);
     const receivedHash = params.get('hash');
-
     if (!receivedHash) return null;
-
     params.delete('hash');
-
     const dataCheckString = [...params.entries()]
-      .sort(function(a, b) { return a[0].localeCompare(b[0]); })
-      .map(function(entry) { return entry[0] + '=' + entry[1]; })
+      .sort(function (a, b) { return a[0].localeCompare(b[0]); })
+      .map(function (entry) { return entry[0] + '=' + entry[1]; })
       .join('\n');
-
-    const secretKey = crypto
-      .createHmac('sha256', 'WebAppData')
-      .update(BOT_TOKEN)
-      .digest();
-
-    const calculatedHash = crypto
-      .createHmac('sha256', secretKey)
-      .update(dataCheckString)
-      .digest('hex');
-
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
     if (
       calculatedHash.length !== receivedHash.length ||
-      !crypto.timingSafeEqual(
-        Buffer.from(calculatedHash),
-        Buffer.from(receivedHash)
-      )
+      !crypto.timingSafeEqual(Buffer.from(calculatedHash), Buffer.from(receivedHash))
     ) {
       return null;
     }
-
     const userRaw = params.get('user');
     if (!userRaw) return null;
-
     return JSON.parse(userRaw);
   } catch (error) {
     console.error('Telegram auth error:', error);
@@ -87,71 +51,44 @@ function verifyTelegramInitData(initData) {
   }
 }
 
-/* =========================================================
-   USER LABEL
-========================================================= */
-
 function userLabel(user) {
   if (!user) return 'Unknown';
-
-  const name = [user.first_name, user.last_name]
-    .filter(Boolean)
-    .join(' ');
-
+  const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
   const username = user.username ? '@' + user.username : 'No username';
-
   return (name || 'Unknown') + ' (' + username + ')';
 }
-
-/* =========================================================
-   GET / CREATE WALLET
-========================================================= */
 
 async function getWallet(telegramId, userName) {
   const sb = db();
   const tid = String(telegramId);
-
   let { data: wallet, error } = await sb
     .from('user_wallets')
     .select('*')
     .eq('telegram_id', tid)
     .maybeSingle();
-
   if (error) throw error;
   if (wallet) return wallet;
 
-  const newWallet = {
-    telegram_id: tid,
-    user_name: userName || 'Manager',
-    balance: 0,
-    total_deposits: 0,
-    total_withdrawals: 0,
-    total_winnings: 0
-  };
-
   const result = await sb
     .from('user_wallets')
-    .upsert(newWallet, { onConflict: 'telegram_id' })
+    .upsert({
+      telegram_id: tid,
+      user_name: userName || 'Manager',
+      balance: 0,
+      total_deposits: 0,
+      total_withdrawals: 0,
+      total_winnings: 0
+    }, { onConflict: 'telegram_id' })
     .select()
     .single();
-
   if (result.error) throw result.error;
   return result.data;
 }
 
-/* =========================================================
-   CHECK ADMIN
-========================================================= */
-
 async function isAdmin(userId) {
   try {
-    const result = await tg('getChatMember', {
-      chat_id: ADMIN_CHAT_ID,
-      user_id: userId
-    });
-
+    const result = await tg('getChatMember', { chat_id: ADMIN_CHAT_ID, user_id: userId });
     if (!result.ok) return false;
-
     const status = result.result.status;
     return status === 'creator' || status === 'administrator';
   } catch (error) {
@@ -160,33 +97,17 @@ async function isAdmin(userId) {
   }
 }
 
-/* =========================================================
-   CREATE WALLET REQUEST
-========================================================= */
-
-
-
-/* =========================================================
-   TELEBIRR TXN ID + DUPLICATE RECEIPT BLOCK
-========================================================= */
-
 function extractTxnId(receipt) {
   if (!receipt) return null;
   const text = String(receipt);
-
   let m = text.match(/transaction number is\s*[:\s]*([A-Za-z0-9]+)/i);
   if (m) return m[1].toUpperCase();
-
   m = text.match(/txn(?:\s*id|\s*no|#)?\s*[:\s]*([A-Za-z0-9]+)/i);
   if (m) return m[1].toUpperCase();
-
   m = text.match(/receipt\/([A-Za-z0-9]+)/i);
   if (m) return m[1].toUpperCase();
-
-  // Codes like DIM90ZLL6L
   m = text.match(/\b([A-Z]{2,}\d{2,}[A-Z0-9]{2,})\b/i);
   if (m) return m[1].toUpperCase();
-
   return null;
 }
 
@@ -196,7 +117,6 @@ async function assertNoDuplicateReceipt(receipt, telegramId) {
 
   if (!txn) {
     console.warn('No txn id parsed from receipt for', telegramId);
-    // Still block exact same full receipt text
     const trimmed = String(receipt || '').trim();
     if (trimmed.length > 40) {
       const { data: same } = await sb
@@ -211,24 +131,21 @@ async function assertNoDuplicateReceipt(receipt, telegramId) {
     return { txn: null };
   }
 
-  // Search receipts containing this txn (any status)
   const { data: rows, error } = await sb
     .from('wallet_requests')
-    .select('id, telegram_id, status, receipt, type, request_type')
+    .select('id, telegram_id, status, receipt')
     .ilike('receipt', '%' + txn + '%')
     .limit(20);
 
   if (error) {
     console.warn('duplicate check error:', error.message);
-    // fallback: load recent and scan in JS
     const { data: recent } = await sb
       .from('wallet_requests')
-      .select('id, telegram_id, status, receipt, type, request_type')
+      .select('id, telegram_id, status, receipt')
       .order('id', { ascending: false })
       .limit(100);
-    const hit = (recent || []).find(function(r) {
-      const rec = String(r.receipt || '').toUpperCase();
-      return rec.indexOf(txn) !== -1;
+    const hit = (recent || []).find(function (r) {
+      return String(r.receipt || '').toUpperCase().indexOf(txn) !== -1;
     });
     if (hit) {
       throw new Error('Duplicate Telebirr receipt (txn ' + txn + '). Already used on request #' + hit.id + '.');
@@ -239,13 +156,8 @@ async function assertNoDuplicateReceipt(receipt, telegramId) {
   if (rows && rows.length > 0) {
     throw new Error('Duplicate Telebirr receipt (txn ' + txn + '). Already used on request #' + rows[0].id + '.');
   }
-
   return { txn: txn };
 }
-
-/* =========================================================
-   SERVER-SIDE JOIN LEAGUE (deduct 100 ETB)
-========================================================= */
 
 async function joinLeagueServer(user, league, gameweek) {
   const sb = db();
@@ -258,7 +170,6 @@ async function joinLeagueServer(user, league, gameweek) {
 
   console.log('joinLeagueServer', tid, lg, gw);
 
-  // Already paid?
   const { data: existingRows, error: exErr } = await sb
     .from('user_squads')
     .select('*')
@@ -287,7 +198,6 @@ async function joinLeagueServer(user, league, gameweek) {
     .eq('telegram_id', tid);
   if (wErr) throw wErr;
 
-  // Upsert paid flag — try update first, then insert
   let squadOk = false;
   if (existing) {
     const { error: uErr } = await sb
@@ -312,7 +222,6 @@ async function joinLeagueServer(user, league, gameweek) {
         total_points: 0
       });
     if (iErr) {
-      // try upsert
       const { error: upErr } = await sb
         .from('user_squads')
         .upsert({
@@ -324,7 +233,6 @@ async function joinLeagueServer(user, league, gameweek) {
           total_points: 0
         }, { onConflict: 'telegram_id,league,gameweek' });
       if (upErr) {
-        // refund
         await sb.from('user_wallets').update({ balance: balance }).eq('telegram_id', tid);
         throw new Error('Could not mark paid: ' + upErr.message);
       }
@@ -334,17 +242,116 @@ async function joinLeagueServer(user, league, gameweek) {
   return { already: false, league: lg, balance: newBalance, charged: ENTRY };
 }
 
-/* =========================================================
-   PROCESS / REJECT REQUEST (integer ids — never uuid RPC)
-========================================================= */
+async function createWalletRequest(data) {
+  const sb = db();
+  const amount = Number(data.amount);
+  const reqType = String(data.type || '').toLowerCase();
+
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error('Invalid amount');
+  if (reqType !== 'deposit' && reqType !== 'withdrawal') throw new Error('Invalid wallet request type');
+
+  let details = data.receipt || null;
+  if (reqType === 'withdrawal') {
+    details = [
+      'Method: ' + (data.method || 'telebirr'),
+      data.accountName ? 'Account name: ' + data.accountName : null,
+      data.accountNo ? 'Account / phone: ' + data.accountNo : null
+    ].filter(Boolean).join('\n');
+  }
+
+  const row = {
+    telegram_id: String(data.telegramId),
+    user_name: data.userName || 'Manager',
+    amount: amount,
+    method: data.method || 'telebirr',
+    receipt: details,
+    status: 'pending',
+    type: reqType,
+    request_type: reqType,
+    account_name: data.accountName || null,
+    account_no: data.accountNo || null
+  };
+
+  console.log('Inserting wallet_requests row:', JSON.stringify(row));
+  let result = await sb.from('wallet_requests').insert(row).select().single();
+
+  if (result.error) {
+    console.warn('insert error, retrying stripped:', result.error.message);
+    const attempts = [
+      function (r) { const x = Object.assign({}, r); delete x.account_name; delete x.account_no; return x; },
+      function (r) { const x = Object.assign({}, r); delete x.account_name; delete x.account_no; delete x.request_type; return x; },
+      function (r) { const x = Object.assign({}, r); delete x.account_name; delete x.account_no; delete x.user_name; return x; }
+    ];
+    for (let i = 0; i < attempts.length; i++) {
+      const payload = attempts[i](row);
+      payload.type = reqType;
+      result = await sb.from('wallet_requests').insert(payload).select().single();
+      if (!result.error) break;
+    }
+  }
+  if (result.error) throw result.error;
+
+  const created = result.data || {};
+  created.account_name = created.account_name || data.accountName || null;
+  created.account_no = created.account_no || data.accountNo || null;
+  created.method = created.method || data.method || 'telebirr';
+  created.type = created.type || reqType;
+  created.request_type = created.request_type || reqType;
+  return created;
+}
+
+async function sendDepositRequest(request) {
+  const text =
+    '🚨 NEW DEPOSIT REQUEST\n\n' +
+    '👤 User: ' + request.user_name + '\n' +
+    '🆔 Telegram ID: ' + request.telegram_id + '\n\n' +
+    '💵 Amount: ' + request.amount + ' ETB\n\n' +
+    '📜 Telebirr Receipt:\n' +
+    String(request.receipt || 'No receipt provided').slice(0, 1500) + '\n\n' +
+    '🆔 Request ID:\n' + request.id + '\n\n' +
+    '⏳ STATUS: PENDING';
+
+  return tg('sendMessage', {
+    chat_id: ADMIN_CHAT_ID,
+    text: text,
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '✅ APPROVE DEPOSIT', callback_data: 'approve_dep_' + request.id }],
+        [{ text: '❌ REJECT DEPOSIT', callback_data: 'reject_dep_' + request.id }]
+      ]
+    }
+  });
+}
+
+async function sendWithdrawalRequest(request) {
+  const text =
+    '💸 NEW WITHDRAWAL REQUEST\n\n' +
+    '👤 User: ' + request.user_name + '\n' +
+    '🆔 Telegram ID: ' + request.telegram_id + '\n\n' +
+    '💵 Amount: ' + request.amount + ' ETB\n\n' +
+    '🏦 Method: ' + String(request.method || 'telebirr').toUpperCase() + '\n\n' +
+    '👤 Account Name:\n' + (request.account_name || '—') + '\n\n' +
+    '📱 Account / Phone:\n' + (request.account_no || '—') + '\n\n' +
+    '🆔 Request ID:\n' + request.id + '\n\n' +
+    '⏳ STATUS: PENDING';
+
+  return tg('sendMessage', {
+    chat_id: ADMIN_CHAT_ID,
+    text: text,
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '✅ MARK PAID', callback_data: 'paid_wit_' + request.id }],
+        [{ text: '❌ REJECT WITHDRAWAL', callback_data: 'reject_wit_' + request.id }]
+      ]
+    }
+  });
+}
 
 async function processRequest(requestId) {
   const sb = db();
   const idRaw = String(requestId).trim();
   console.log('processRequest v5 id=', idRaw);
 
-  // NEVER filter uuid-typed columns with bare integers.
-  // Load pending (and fallback recent) rows, match by string id.
   let request = null;
 
   const { data: pending, error: pErr } = await sb
@@ -352,10 +359,9 @@ async function processRequest(requestId) {
     .select('*')
     .eq('status', 'pending')
     .limit(100);
-
   if (pErr) console.warn('pending load', pErr.message);
 
-  request = (pending || []).find(function(r) { return String(r.id) === idRaw; });
+  request = (pending || []).find(function (r) { return String(r.id) === idRaw; });
 
   if (!request) {
     const { data: recent, error: rErr } = await sb
@@ -364,13 +370,11 @@ async function processRequest(requestId) {
       .order('id', { ascending: false })
       .limit(50);
     if (rErr) throw new Error(rErr.message);
-    request = (recent || []).find(function(r) { return String(r.id) === idRaw; });
+    request = (recent || []).find(function (r) { return String(r.id) === idRaw; });
   }
-
   if (!request) throw new Error('Request not found: ' + idRaw);
 
-  const status = String(request.status || '').toLowerCase();
-  if (status !== 'pending') {
+  if (String(request.status || '').toLowerCase() !== 'pending') {
     throw new Error('Request already processed: ' + request.status);
   }
 
@@ -379,7 +383,6 @@ async function processRequest(requestId) {
 
   const telegramId = String(request.telegram_id);
   const reqType = String(request.type || request.request_type || '').toLowerCase();
-
   const wallet = await getWallet(telegramId, request.user_name || 'Manager');
   const balance = Number(wallet.balance || 0);
 
@@ -406,30 +409,24 @@ async function processRequest(requestId) {
       total_withdrawals: totalWithdrawals
     })
     .eq('telegram_id', telegramId);
-
   if (walletErr) throw walletErr;
 
   const newStatus = reqType === 'withdrawal' ? 'paid' : 'approved';
-
-  // Update by matching the exact id value from the row we loaded
   const { error: reqErr } = await sb
     .from('wallet_requests')
-    .update({
-      status: newStatus,
-      processed_at: new Date().toISOString()
-    })
+    .update({ status: newStatus, processed_at: new Date().toISOString() })
     .eq('id', request.id)
     .eq('status', 'pending');
 
   if (reqErr) {
-    console.warn('status update by id failed, trying filter only status+telegram', reqErr.message);
-    // Last resort: update via telegram_id + amount + pending
-    await sb
+    console.warn('status update by id failed:', reqErr.message);
+    const { error: reqErr2 } = await sb
       .from('wallet_requests')
       .update({ status: newStatus, processed_at: new Date().toISOString() })
       .eq('telegram_id', telegramId)
       .eq('status', 'pending')
       .eq('amount', amount);
+    if (reqErr2) throw reqErr2;
   }
 
   return {
@@ -451,14 +448,14 @@ async function rejectRequest(requestId) {
     .eq('status', 'pending')
     .limit(100);
 
-  let request = (pending || []).find(function(r) { return String(r.id) === idRaw; });
+  let request = (pending || []).find(function (r) { return String(r.id) === idRaw; });
   if (!request) {
     const { data: recent } = await sb
       .from('wallet_requests')
       .select('*')
       .order('id', { ascending: false })
       .limit(50);
-    request = (recent || []).find(function(r) { return String(r.id) === idRaw; });
+    request = (recent || []).find(function (r) { return String(r.id) === idRaw; });
   }
   if (!request) throw new Error('Request not found: ' + idRaw);
   if (String(request.status || '').toLowerCase() !== 'pending') {
@@ -467,35 +464,23 @@ async function rejectRequest(requestId) {
 
   const { error: updateError } = await sb
     .from('wallet_requests')
-    .update({
-      status: 'rejected',
-      processed_at: new Date().toISOString()
-    })
+    .update({ status: 'rejected', processed_at: new Date().toISOString() })
     .eq('id', request.id)
     .eq('status', 'pending');
-
   if (updateError) throw updateError;
   return request;
 }
 
 async function updateAdminMessage(query, statusText) {
   if (!query.message) return;
-
   const oldText = query.message.text || '';
-
   await tg('editMessageText', {
     chat_id: query.message.chat.id,
     message_id: query.message.message_id,
     text: oldText + '\n\n' + statusText,
-    reply_markup: {
-      inline_keyboard: []
-    }
+    reply_markup: { inline_keyboard: [] }
   });
 }
-
-/* =========================================================
-   HANDLE ADMIN CALLBACK
-========================================================= */
 
 async function handleCallback(query) {
   if (!query.message || String(query.message.chat.id) !== ADMIN_CHAT_ID) {
@@ -508,7 +493,6 @@ async function handleCallback(query) {
   }
 
   const admin = await isAdmin(query.from.id);
-
   if (!admin) {
     await tg('answerCallbackQuery', {
       callback_query_id: query.id,
@@ -532,21 +516,14 @@ async function handleCallback(query) {
     return;
   }
 
-  // DEPOSIT APPROVAL
   if (action === 'approve' && type === 'dep') {
     try {
       const result = await processRequest(requestId);
-
-      await tg('answerCallbackQuery', {
-        callback_query_id: query.id,
-        text: 'Deposit approved ✅'
-      });
-
+      await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Deposit approved ✅' });
       await tg('sendMessage', {
         chat_id: result.telegram_id,
         text: '🎉 DEPOSIT APPROVED\n\n💵 Amount: ' + result.amount + ' ETB\n\n💰 New wallet balance:\n' + result.new_balance + ' ETB'
       });
-
       await updateAdminMessage(query, '✅ STATUS: APPROVED (+' + result.amount + ' ETB)');
     } catch (error) {
       console.error('Deposit approval error:', error);
@@ -559,21 +536,14 @@ async function handleCallback(query) {
     return;
   }
 
-  // DEPOSIT REJECTION
   if (action === 'reject' && type === 'dep') {
     try {
       const request = await rejectRequest(requestId);
-
-      await tg('answerCallbackQuery', {
-        callback_query_id: query.id,
-        text: 'Deposit rejected ❌'
-      });
-
+      await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Deposit rejected ❌' });
       await tg('sendMessage', {
         chat_id: request.telegram_id,
-        text: '❌ DEPOSIT REJECTED\n\nYour ' + request.amount + ' ETB deposit could not be verified.\n\nPlease contact Ha Fantasy support if you believe this was a mistake.'
+        text: '❌ DEPOSIT REJECTED\n\nYour ' + request.amount + ' ETB deposit could not be verified.'
       });
-
       await updateAdminMessage(query, '❌ STATUS: REJECTED');
     } catch (error) {
       console.error('Deposit rejection error:', error);
@@ -586,21 +556,14 @@ async function handleCallback(query) {
     return;
   }
 
-  // WITHDRAWAL PAID
   if (action === 'paid' && type === 'wit') {
     try {
       const result = await processRequest(requestId);
-
-      await tg('answerCallbackQuery', {
-        callback_query_id: query.id,
-        text: 'Withdrawal marked as paid ✅'
-      });
-
+      await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Withdrawal marked as paid ✅' });
       await tg('sendMessage', {
         chat_id: result.telegram_id,
         text: '💸 WITHDRAWAL COMPLETED\n\n💵 Amount: ' + result.amount + ' ETB\n\n💰 Remaining balance:\n' + result.new_balance + ' ETB'
       });
-
       await updateAdminMessage(query, '✅ STATUS: PAID OUT (-' + result.amount + ' ETB)');
     } catch (error) {
       console.error('Withdrawal payment error:', error);
@@ -613,21 +576,14 @@ async function handleCallback(query) {
     return;
   }
 
-  // WITHDRAWAL REJECT
   if (action === 'reject' && type === 'wit') {
     try {
       const request = await rejectRequest(requestId);
-
-      await tg('answerCallbackQuery', {
-        callback_query_id: query.id,
-        text: 'Withdrawal rejected ❌'
-      });
-
+      await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Withdrawal rejected ❌' });
       await tg('sendMessage', {
         chat_id: request.telegram_id,
-        text: '❌ WITHDRAWAL REJECTED\n\nYour ' + request.amount + ' ETB withdrawal request was rejected.\n\nYour wallet balance was not changed.'
+        text: '❌ WITHDRAWAL REJECTED\n\nYour ' + request.amount + ' ETB withdrawal was rejected.\nBalance unchanged.'
       });
-
       await updateAdminMessage(query, '❌ STATUS: REJECTED — BALANCE UNCHANGED');
     } catch (error) {
       console.error('Withdrawal rejection error:', error);
@@ -640,18 +596,10 @@ async function handleCallback(query) {
     return;
   }
 
-  await tg('answerCallbackQuery', {
-    callback_query_id: query.id,
-    text: 'Unknown action.'
-  });
+  await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Unknown action.' });
 }
 
-/* =========================================================
-   MAIN HANDLER
-========================================================= */
-
 module.exports = async function handler(req, res) {
-  // CORS — required so ha-fantasy.onrender.com can call this API
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -662,27 +610,19 @@ module.exports = async function handler(req, res) {
 
   console.log('Ha Fantasy API version: 2026-09-30-v5-join-dup');
 
-  // HEALTH CHECK / GET WALLET
   if (req.method === 'GET') {
     const action = req.query && req.query.action;
-
     if (action === 'wallet') {
       try {
         const initData = req.headers.authorization || '';
         const user = verifyTelegramInitData(initData);
-
         if (!user) {
-          return res.status(401).json({
-            ok: false,
-            error: 'Invalid Telegram authentication'
-          });
+          return res.status(401).json({ ok: false, error: 'Invalid Telegram authentication' });
         }
-
         const wallet = await getWallet(
           user.id,
           [user.first_name, user.last_name].filter(Boolean).join(' ')
         );
-
         return res.status(200).json({
           ok: true,
           wallet: {
@@ -694,38 +634,27 @@ module.exports = async function handler(req, res) {
         });
       } catch (error) {
         console.error('GET wallet error:', error);
-        return res.status(500).json({
-          ok: false,
-          error: error.message
-        });
+        return res.status(500).json({ ok: false, error: error.message });
       }
     }
-
-    return res.status(200).send('Ha Fantasy wallet API OK');
+    return res.status(200).send('Ha Fantasy wallet API OK — v5');
   }
 
-  // ONLY POST AFTER THIS POINT
   if (req.method !== 'POST') {
-    return res.status(405).json({
-      ok: false,
-      error: 'Method not allowed'
-    });
+    return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
   try {
     const update = req.body || {};
 
-    // TELEGRAM CALLBACK QUERY
     if (update.callback_query) {
       await handleCallback(update.callback_query);
       return res.status(200).json({ ok: true });
     }
 
-    // TELEGRAM WEBAPP DATA
     if (update.message && update.message.web_app_data) {
       const message = update.message;
       const user = message.from;
-
       let data;
       try {
         data = JSON.parse(message.web_app_data.data);
@@ -761,34 +690,25 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // DIRECT HTML WALLET REQUEST
     if (update.action === 'wallet_request') {
       const initData = update.initData || '';
       const user = verifyTelegramInitData(initData);
-
       if (!user) {
-        return res.status(401).json({
-          ok: false,
-          error: 'Invalid Telegram authentication'
-        });
+        return res.status(401).json({ ok: false, error: 'Invalid Telegram authentication' });
       }
 
       const type = update.type;
-
       if (type !== 'deposit' && type !== 'withdrawal') {
-        return res.status(400).json({
-          ok: false,
-          error: 'Invalid wallet request type'
-        });
+        return res.status(400).json({ ok: false, error: 'Invalid wallet request type' });
       }
 
       const amount = Number(update.amount);
-
       if (!Number.isFinite(amount) || amount <= 0) {
-        return res.status(400).json({
-          ok: false,
-          error: 'Invalid amount'
-        });
+        return res.status(400).json({ ok: false, error: 'Invalid amount' });
+      }
+
+      if (type === 'deposit') {
+        await assertNoDuplicateReceipt(update.receipt || '', user.id);
       }
 
       if (type === 'withdrawal') {
@@ -796,17 +716,9 @@ module.exports = async function handler(req, res) {
           user.id,
           [user.first_name, user.last_name].filter(Boolean).join(' ')
         );
-
         if (Number(wallet.balance || 0) < amount) {
-          return res.status(400).json({
-            ok: false,
-            error: 'Insufficient balance'
-          });
+          return res.status(400).json({ ok: false, error: 'Insufficient balance' });
         }
-      }
-
-      if (type === 'deposit') {
-        await assertNoDuplicateReceipt(update.receipt || '', user.id);
       }
 
       const request = await createWalletRequest({
@@ -822,14 +734,10 @@ module.exports = async function handler(req, res) {
 
       if (type === 'deposit') {
         const result = await sendDepositRequest(request);
-        if (!result.ok) {
-          throw new Error('Could not send deposit request to admin group');
-        }
+        if (!result.ok) throw new Error('Could not send deposit request to admin group');
       } else {
         const result = await sendWithdrawalRequest(request);
-        if (!result.ok) {
-          throw new Error('Could not send withdrawal request to admin group');
-        }
+        if (!result.ok) throw new Error('Could not send withdrawal request to admin group');
       }
 
       return res.status(200).json({
@@ -841,7 +749,6 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // SERVER-SIDE JOIN LEAGUE (Pay 100 ETB)
     if (update.action === 'join_league') {
       const initData = update.initData || '';
       const user = verifyTelegramInitData(initData);
@@ -849,11 +756,7 @@ module.exports = async function handler(req, res) {
         return res.status(401).json({ ok: false, error: 'Invalid Telegram authentication' });
       }
       try {
-        const result = await joinLeagueServer(
-          user,
-          update.league,
-          update.gameweek || 1
-        );
+        const result = await joinLeagueServer(user, update.league, update.gameweek || 1);
         return res.status(200).json({
           ok: true,
           already: !!result.already,
@@ -862,7 +765,7 @@ module.exports = async function handler(req, res) {
           charged: result.charged || 0,
           message: result.already
             ? 'Already joined this league this week.'
-            : ('Joined ' + result.league + '. 100 ETB deducted.')
+            : 'Joined ' + result.league + '. 100 ETB deducted.'
         });
       } catch (e) {
         console.error('join_league error:', e);
@@ -870,14 +773,9 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // UNKNOWN POST
     return res.status(200).json({ ok: true });
-
   } catch (error) {
     console.error('Ha Fantasy API error:', error);
-    return res.status(500).json({
-      ok: false,
-      error: error.message || 'Server error'
-    });
+    return res.status(500).json({ ok: false, error: error.message || 'Server error' });
   }
 };
