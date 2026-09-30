@@ -167,34 +167,78 @@ async function isAdmin(userId) {
 async function createWalletRequest(data) {
   const sb = db();
   const amount = Number(data.amount);
+  const reqType = String(data.type || '').toLowerCase(); // deposit | withdrawal
 
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error('Invalid amount');
   }
 
-  if (data.type !== 'deposit' && data.type !== 'withdrawal') {
+  if (reqType !== 'deposit' && reqType !== 'withdrawal') {
     throw new Error('Invalid wallet request type');
   }
 
-  const request = {
+  let details = data.receipt || null;
+  if (reqType === 'withdrawal') {
+    const bits = [
+      'Method: ' + (data.method || 'telebirr'),
+      data.accountName ? ('Account name: ' + data.accountName) : null,
+      data.accountNo ? ('Account / phone: ' + data.accountNo) : null
+    ].filter(Boolean);
+    details = bits.join('\n');
+  }
+
+  // IMPORTANT: your table has NOT NULL column named "type"
+  // Also may have "request_type" — set BOTH so either schema works.
+  const row = {
     telegram_id: String(data.telegramId),
     user_name: data.userName || 'Manager',
-    request_type: data.type,
     amount: amount,
     method: data.method || 'telebirr',
-    account_name: data.accountName || null,
-    account_no: data.accountNo || null,
-    receipt: data.receipt || null,
+    receipt: details,
     status: 'pending'
   };
+  row['type'] = reqType;
+  row['request_type'] = reqType;
+  row['account_name'] = data.accountName || null;
+  row['account_no'] = data.accountNo || null;
 
-  const { data: created, error } = await sb
-    .from('wallet_requests')
-    .insert(request)
-    .select()
-    .single();
+  console.log('Inserting wallet_requests row:', JSON.stringify(row));
 
-  if (error) throw error;
+  let result = await sb.from('wallet_requests').insert(row).select().single();
+
+  // Drop optional columns that may not exist and retry
+  if (result.error) {
+    const msg = String(result.error.message || result.error.code || '');
+    console.warn('wallet_requests insert error, retrying stripped:', msg);
+
+    const attempts = [
+      // without account fields
+      function(r) { const x = Object.assign({}, r); delete x.account_name; delete x.account_no; return x; },
+      // without request_type
+      function(r) { const x = Object.assign({}, r); delete x.account_name; delete x.account_no; delete x.request_type; return x; },
+      // without type (only if request_type works — last resort; prefer keeping type)
+      function(r) { const x = Object.assign({}, r); delete x.account_name; delete x.account_no; delete x.user_name; return x; }
+    ];
+
+    for (let i = 0; i < attempts.length; i++) {
+      const payload = attempts[i](row);
+      // NEVER delete type — it is NOT NULL on this database
+      payload['type'] = reqType;
+      console.log('Retry payload', i, JSON.stringify(payload));
+      result = await sb.from('wallet_requests').insert(payload).select().single();
+      if (!result.error) break;
+      console.warn('Retry', i, 'failed:', result.error.message);
+    }
+  }
+
+  if (result.error) throw result.error;
+
+  const created = result.data || {};
+  created.account_name = created.account_name || data.accountName || null;
+  created.account_no = created.account_no || data.accountNo || null;
+  created.method = created.method || data.method || 'telebirr';
+  created.type = created.type || reqType;
+  created.request_type = created.request_type || reqType;
   return created;
 }
 
