@@ -170,14 +170,32 @@ async function joinLeagueServer(user, league, gameweek) {
 
   console.log('joinLeagueServer', tid, lg, gw);
 
-  const { data: existingRows, error: exErr } = await sb
+  // Prefer dedicated contest_entries table if it exists
+  let useEntriesTable = true;
+  const { data: entryRows, error: entryLookErr } = await sb
+    .from('contest_entries')
+    .select('*')
+    .eq('telegram_id', tid)
+    .eq('league', lg)
+    .eq('gameweek', gw)
+    .limit(1);
+
+  if (entryLookErr) {
+    // table may not exist yet
+    useEntriesTable = false;
+    console.warn('contest_entries lookup:', entryLookErr.message);
+  } else if (entryRows && entryRows.length) {
+    const wallet = await getWallet(tid, userName);
+    return { already: true, league: lg, balance: Number(wallet.balance || 0) };
+  }
+
+  // Also check user_squads.paid for backwards compatibility
+  const { data: existingRows } = await sb
     .from('user_squads')
     .select('*')
     .eq('telegram_id', tid)
     .eq('league', lg)
     .eq('gameweek', gw);
-
-  if (exErr) console.warn('existing squad lookup', exErr.message);
 
   const existing = (existingRows && existingRows[0]) || null;
   if (existing && (existing.paid === true || existing.paid === 'true' || existing.paid === 1)) {
@@ -198,7 +216,52 @@ async function joinLeagueServer(user, league, gameweek) {
     .eq('telegram_id', tid);
   if (wErr) throw wErr;
 
-  let squadOk = false;
+  async function refund() {
+    await sb.from('user_wallets').update({ balance: balance }).eq('telegram_id', tid);
+  }
+
+  // 1) contest_entries (preferred)
+  if (useEntriesTable) {
+    const { error: eIns } = await sb.from('contest_entries').insert({
+      telegram_id: tid,
+      user_name: userName,
+      league: lg,
+      gameweek: gw,
+      paid: true,
+      amount: ENTRY
+    });
+    if (eIns) {
+      // unique violation = already joined
+      if (/duplicate|unique/i.test(eIns.message || '')) {
+        await refund();
+        return { already: true, league: lg, balance: balance };
+      }
+      console.warn('contest_entries insert failed, falling back to user_squads:', eIns.message);
+      useEntriesTable = false;
+    } else {
+      // Also mark user_squads.paid if a squad row exists / create minimal row
+      try {
+        await markUserSquadPaid(sb, tid, userName, lg, gw, existing);
+      } catch (e) {
+        console.warn('mark user_squads paid after contest_entries:', e.message || e);
+      }
+      return { already: false, league: lg, balance: newBalance, charged: ENTRY };
+    }
+  }
+
+  // 2) Fallback: user_squads only (must satisfy active_chip check)
+  try {
+    await markUserSquadPaid(sb, tid, userName, lg, gw, existing);
+  } catch (e) {
+    await refund();
+    throw e;
+  }
+
+  return { already: false, league: lg, balance: newBalance, charged: ENTRY };
+}
+
+async function markUserSquadPaid(sb, tid, userName, lg, gw, existing) {
+  // active_chip must pass user_squads_active_chip_check — use null or allowed chip values only
   if (existing) {
     const { error: uErr } = await sb
       .from('user_squads')
@@ -206,40 +269,58 @@ async function joinLeagueServer(user, league, gameweek) {
       .eq('telegram_id', tid)
       .eq('league', lg)
       .eq('gameweek', gw);
-    if (!uErr) squadOk = true;
-    else console.warn('squad update failed', uErr.message);
+    if (uErr) throw new Error('Could not mark paid: ' + uErr.message);
+    return;
   }
 
-  if (!squadOk) {
-    const { error: iErr } = await sb
-      .from('user_squads')
-      .insert({
-        telegram_id: tid,
-        user_name: userName,
-        league: lg,
-        gameweek: gw,
-        paid: true,
-        total_points: 0
-      });
-    if (iErr) {
-      const { error: upErr } = await sb
-        .from('user_squads')
-        .upsert({
-          telegram_id: tid,
-          user_name: userName,
-          league: lg,
-          gameweek: gw,
-          paid: true,
-          total_points: 0
-        }, { onConflict: 'telegram_id,league,gameweek' });
-      if (upErr) {
-        await sb.from('user_wallets').update({ balance: balance }).eq('telegram_id', tid);
-        throw new Error('Could not mark paid: ' + upErr.message);
-      }
+  // Insert minimal valid row — include fields the check constraint expects
+  const attempts = [
+    {
+      telegram_id: tid,
+      user_name: userName,
+      league: lg,
+      gameweek: gw,
+      paid: true,
+      total_points: 0,
+      formation: '4-3-3',
+      active_chip: null
+    },
+    {
+      telegram_id: tid,
+      user_name: userName,
+      league: lg,
+      gameweek: gw,
+      paid: true,
+      total_points: 0,
+      formation: '4-3-3'
+      // omit active_chip
+    },
+    {
+      telegram_id: tid,
+      user_name: userName,
+      league: lg,
+      gameweek: gw,
+      paid: true,
+      total_points: 0,
+      formation: '4-3-3',
+      active_chip: 'none'
     }
-  }
+  ];
 
-  return { already: false, league: lg, balance: newBalance, charged: ENTRY };
+  let lastErr = null;
+  for (let i = 0; i < attempts.length; i++) {
+    const { error } = await sb.from('user_squads').insert(attempts[i]);
+    if (!error) return;
+    lastErr = error;
+    console.warn('user_squads insert attempt', i, error.message);
+    // try upsert
+    const { error: upErr } = await sb
+      .from('user_squads')
+      .upsert(attempts[i], { onConflict: 'telegram_id,league,gameweek' });
+    if (!upErr) return;
+    lastErr = upErr;
+  }
+  throw new Error('Could not mark paid: ' + (lastErr && lastErr.message ? lastErr.message : 'unknown'));
 }
 
 async function createWalletRequest(data) {
