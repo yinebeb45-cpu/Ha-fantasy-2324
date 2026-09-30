@@ -176,50 +176,25 @@ async function createWalletRequest(data) {
     throw new Error('Invalid wallet request type');
   }
 
-  // Build receipt / details text so withdrawal account info is never lost
-  // even if optional columns are missing from the table.
-  let details = data.receipt || null;
-  if (data.type === 'withdrawal') {
-    const bits = [
-      'Method: ' + (data.method || 'telebirr'),
-      data.accountName ? ('Account name: ' + data.accountName) : null,
-      data.accountNo ? ('Account / phone: ' + data.accountNo) : null
-    ].filter(Boolean);
-    details = bits.join('\n');
-  }
-
-  // Minimal columns that should exist on every setup
-  const base = {
+  const request = {
     telegram_id: String(data.telegramId),
     user_name: data.userName || 'Manager',
     request_type: data.type,
     amount: amount,
     method: data.method || 'telebirr',
-    receipt: details,
+    account_name: data.accountName || null,
+    account_no: data.accountNo || null,
+    receipt: data.receipt || null,
     status: 'pending'
   };
 
-  // Prefer full row (if you ran the ALTER TABLE SQL)
-  const full = Object.assign({}, base, {
-    account_name: data.accountName || null,
-    account_no: data.accountNo || null
-  });
+  const { data: created, error } = await sb
+    .from('wallet_requests')
+    .insert(request)
+    .select()
+    .single();
 
-  let result = await sb.from('wallet_requests').insert(full).select().single();
-
-  // Schema cache / missing columns → retry with base fields only
-  if (result.error && /account_name|account_no|PGRST204|schema cache/i.test(String(result.error.message || ''))) {
-    console.warn('wallet_requests missing optional columns, retrying base insert:', result.error.message);
-    result = await sb.from('wallet_requests').insert(base).select().single();
-  }
-
-  if (result.error) throw result.error;
-
-  // Attach account fields in-memory for Telegram message text
-  const created = result.data || {};
-  created.account_name = created.account_name || data.accountName || null;
-  created.account_no = created.account_no || data.accountNo || null;
-  created.method = created.method || data.method || 'telebirr';
+  if (error) throw error;
   return created;
 }
 
