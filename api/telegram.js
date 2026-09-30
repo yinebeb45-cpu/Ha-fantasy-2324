@@ -164,186 +164,304 @@ async function isAdmin(userId) {
    CREATE WALLET REQUEST
 ========================================================= */
 
-async function createWalletRequest(data) {
+
+
+/* =========================================================
+   TELEBIRR TXN ID + DUPLICATE RECEIPT BLOCK
+========================================================= */
+
+function extractTxnId(receipt) {
+  if (!receipt) return null;
+  const text = String(receipt);
+
+  let m = text.match(/transaction number is\s*[:\s]*([A-Za-z0-9]+)/i);
+  if (m) return m[1].toUpperCase();
+
+  m = text.match(/txn(?:\s*id|\s*no|#)?\s*[:\s]*([A-Za-z0-9]+)/i);
+  if (m) return m[1].toUpperCase();
+
+  m = text.match(/receipt\/([A-Za-z0-9]+)/i);
+  if (m) return m[1].toUpperCase();
+
+  // Codes like DIM90ZLL6L
+  m = text.match(/\b([A-Z]{2,}\d{2,}[A-Z0-9]{2,})\b/i);
+  if (m) return m[1].toUpperCase();
+
+  return null;
+}
+
+async function assertNoDuplicateReceipt(receipt, telegramId) {
+  const txn = extractTxnId(receipt);
   const sb = db();
-  const amount = Number(data.amount);
-  const reqType = String(data.type || '').toLowerCase(); // deposit | withdrawal
 
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error('Invalid amount');
-  }
-
-  if (reqType !== 'deposit' && reqType !== 'withdrawal') {
-    throw new Error('Invalid wallet request type');
-  }
-
-  let details = data.receipt || null;
-  if (reqType === 'withdrawal') {
-    const bits = [
-      'Method: ' + (data.method || 'telebirr'),
-      data.accountName ? ('Account name: ' + data.accountName) : null,
-      data.accountNo ? ('Account / phone: ' + data.accountNo) : null
-    ].filter(Boolean);
-    details = bits.join('\n');
-  }
-
-  // IMPORTANT: your table has NOT NULL column named "type"
-  // Also may have "request_type" — set BOTH so either schema works.
-  const row = {
-    telegram_id: String(data.telegramId),
-    user_name: data.userName || 'Manager',
-    amount: amount,
-    method: data.method || 'telebirr',
-    receipt: details,
-    status: 'pending'
-  };
-  row['type'] = reqType;
-  row['request_type'] = reqType;
-  row['account_name'] = data.accountName || null;
-  row['account_no'] = data.accountNo || null;
-
-  console.log('Inserting wallet_requests row:', JSON.stringify(row));
-
-  let result = await sb.from('wallet_requests').insert(row).select().single();
-
-  // Drop optional columns that may not exist and retry
-  if (result.error) {
-    const msg = String(result.error.message || result.error.code || '');
-    console.warn('wallet_requests insert error, retrying stripped:', msg);
-
-    const attempts = [
-      // without account fields
-      function(r) { const x = Object.assign({}, r); delete x.account_name; delete x.account_no; return x; },
-      // without request_type
-      function(r) { const x = Object.assign({}, r); delete x.account_name; delete x.account_no; delete x.request_type; return x; },
-      // without type (only if request_type works — last resort; prefer keeping type)
-      function(r) { const x = Object.assign({}, r); delete x.account_name; delete x.account_no; delete x.user_name; return x; }
-    ];
-
-    for (let i = 0; i < attempts.length; i++) {
-      const payload = attempts[i](row);
-      // NEVER delete type — it is NOT NULL on this database
-      payload['type'] = reqType;
-      console.log('Retry payload', i, JSON.stringify(payload));
-      result = await sb.from('wallet_requests').insert(payload).select().single();
-      if (!result.error) break;
-      console.warn('Retry', i, 'failed:', result.error.message);
+  if (!txn) {
+    console.warn('No txn id parsed from receipt for', telegramId);
+    // Still block exact same full receipt text
+    const trimmed = String(receipt || '').trim();
+    if (trimmed.length > 40) {
+      const { data: same } = await sb
+        .from('wallet_requests')
+        .select('id, telegram_id, status')
+        .ilike('receipt', trimmed.slice(0, 80) + '%')
+        .limit(5);
+      if (same && same.length) {
+        throw new Error('This receipt text was already submitted (request #' + same[0].id + ').');
+      }
     }
+    return { txn: null };
   }
 
-  if (result.error) throw result.error;
+  // Search receipts containing this txn (any status)
+  const { data: rows, error } = await sb
+    .from('wallet_requests')
+    .select('id, telegram_id, status, receipt, type, request_type')
+    .ilike('receipt', '%' + txn + '%')
+    .limit(20);
 
-  const created = result.data || {};
-  created.account_name = created.account_name || data.accountName || null;
-  created.account_no = created.account_no || data.accountNo || null;
-  created.method = created.method || data.method || 'telebirr';
-  created.type = created.type || reqType;
-  created.request_type = created.request_type || reqType;
-  return created;
+  if (error) {
+    console.warn('duplicate check error:', error.message);
+    // fallback: load recent and scan in JS
+    const { data: recent } = await sb
+      .from('wallet_requests')
+      .select('id, telegram_id, status, receipt, type, request_type')
+      .order('id', { ascending: false })
+      .limit(100);
+    const hit = (recent || []).find(function(r) {
+      const rec = String(r.receipt || '').toUpperCase();
+      return rec.indexOf(txn) !== -1;
+    });
+    if (hit) {
+      throw new Error('Duplicate Telebirr receipt (txn ' + txn + '). Already used on request #' + hit.id + '.');
+    }
+    return { txn: txn };
+  }
+
+  if (rows && rows.length > 0) {
+    throw new Error('Duplicate Telebirr receipt (txn ' + txn + '). Already used on request #' + rows[0].id + '.');
+  }
+
+  return { txn: txn };
 }
 
 /* =========================================================
-   SEND DEPOSIT REQUEST TO ADMIN GROUP
+   SERVER-SIDE JOIN LEAGUE (deduct 100 ETB)
 ========================================================= */
 
-async function sendDepositRequest(request) {
-  const text = '🚨 NEW DEPOSIT REQUEST\n\n' +
-    '👤 User: ' + request.user_name + '\n' +
-    '🆔 Telegram ID: ' + request.telegram_id + '\n\n' +
-    '💵 Amount: ' + request.amount + ' ETB\n\n' +
-    '📜 Telebirr Receipt:\n' +
-    String(request.receipt || 'No receipt provided').slice(0, 1500) + '\n\n' +
-    '🆔 Request ID:\n' + request.id + '\n\n' +
-    '⏳ STATUS: PENDING';
+async function joinLeagueServer(user, league, gameweek) {
+  const sb = db();
+  const lg = String(league || '').toUpperCase();
+  if (lg !== 'EPL' && lg !== 'UCL') throw new Error('Invalid league');
+  const gw = Number(gameweek) || 1;
+  const tid = String(user.id);
+  const userName = [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Manager';
+  const ENTRY = 100;
 
-  return tg('sendMessage', {
-    chat_id: ADMIN_CHAT_ID,
-    text: text,
-    reply_markup: {
-      inline_keyboard: [
-        [
-          {
-            text: '✅ APPROVE DEPOSIT',
-            callback_data: 'approve_dep_' + request.id
-          }
-        ],
-        [
-          {
-            text: '❌ REJECT DEPOSIT',
-            callback_data: 'reject_dep_' + request.id
-          }
-        ]
-      ]
+  console.log('joinLeagueServer', tid, lg, gw);
+
+  // Already paid?
+  const { data: existingRows, error: exErr } = await sb
+    .from('user_squads')
+    .select('*')
+    .eq('telegram_id', tid)
+    .eq('league', lg)
+    .eq('gameweek', gw);
+
+  if (exErr) console.warn('existing squad lookup', exErr.message);
+
+  const existing = (existingRows && existingRows[0]) || null;
+  if (existing && (existing.paid === true || existing.paid === 'true' || existing.paid === 1)) {
+    const wallet = await getWallet(tid, userName);
+    return { already: true, league: lg, balance: Number(wallet.balance || 0) };
+  }
+
+  const wallet = await getWallet(tid, userName);
+  const balance = Number(wallet.balance || 0);
+  if (balance < ENTRY) {
+    throw new Error('Insufficient balance. Need 100 ETB (you have ' + balance + ').');
+  }
+
+  const newBalance = balance - ENTRY;
+  const { error: wErr } = await sb
+    .from('user_wallets')
+    .update({ balance: newBalance })
+    .eq('telegram_id', tid);
+  if (wErr) throw wErr;
+
+  // Upsert paid flag — try update first, then insert
+  let squadOk = false;
+  if (existing) {
+    const { error: uErr } = await sb
+      .from('user_squads')
+      .update({ paid: true, user_name: userName })
+      .eq('telegram_id', tid)
+      .eq('league', lg)
+      .eq('gameweek', gw);
+    if (!uErr) squadOk = true;
+    else console.warn('squad update failed', uErr.message);
+  }
+
+  if (!squadOk) {
+    const { error: iErr } = await sb
+      .from('user_squads')
+      .insert({
+        telegram_id: tid,
+        user_name: userName,
+        league: lg,
+        gameweek: gw,
+        paid: true,
+        total_points: 0
+      });
+    if (iErr) {
+      // try upsert
+      const { error: upErr } = await sb
+        .from('user_squads')
+        .upsert({
+          telegram_id: tid,
+          user_name: userName,
+          league: lg,
+          gameweek: gw,
+          paid: true,
+          total_points: 0
+        }, { onConflict: 'telegram_id,league,gameweek' });
+      if (upErr) {
+        // refund
+        await sb.from('user_wallets').update({ balance: balance }).eq('telegram_id', tid);
+        throw new Error('Could not mark paid: ' + upErr.message);
+      }
     }
-  });
+  }
+
+  return { already: false, league: lg, balance: newBalance, charged: ENTRY };
 }
 
 /* =========================================================
-   SEND WITHDRAWAL REQUEST TO ADMIN GROUP
-========================================================= */
-
-async function sendWithdrawalRequest(request) {
-  const text = '💸 NEW WITHDRAWAL REQUEST\n\n' +
-    '👤 User: ' + request.user_name + '\n' +
-    '🆔 Telegram ID: ' + request.telegram_id + '\n\n' +
-    '💵 Amount: ' + request.amount + ' ETB\n\n' +
-    '🏦 Method: ' + String(request.method || 'telebirr').toUpperCase() + '\n\n' +
-    '👤 Account Name:\n' + (request.account_name || '—') + '\n\n' +
-    '📱 Account / Phone:\n' + (request.account_no || '—') + '\n\n' +
-    '🆔 Request ID:\n' + request.id + '\n\n' +
-    '⏳ STATUS: PENDING';
-
-  return tg('sendMessage', {
-    chat_id: ADMIN_CHAT_ID,
-    text: text,
-    reply_markup: {
-      inline_keyboard: [
-        [
-          {
-            text: '✅ MARK PAID',
-            callback_data: 'paid_wit_' + request.id
-          }
-        ],
-        [
-          {
-            text: '❌ REJECT WITHDRAWAL',
-            callback_data: 'reject_wit_' + request.id
-          }
-        ]
-      ]
-    }
-  });
-}
-
-/* =========================================================
-   PROCESS REQUEST
+   PROCESS / REJECT REQUEST (integer ids — never uuid RPC)
 ========================================================= */
 
 async function processRequest(requestId) {
-  const { data, error } = await db().rpc('process_wallet_request', {
-    p_request_id: requestId
-  });
+  const sb = db();
+  const idRaw = String(requestId).trim();
+  console.log('processRequest v5 id=', idRaw);
 
-  if (error) throw error;
-  return data;
+  // NEVER filter uuid-typed columns with bare integers.
+  // Load pending (and fallback recent) rows, match by string id.
+  let request = null;
+
+  const { data: pending, error: pErr } = await sb
+    .from('wallet_requests')
+    .select('*')
+    .eq('status', 'pending')
+    .limit(100);
+
+  if (pErr) console.warn('pending load', pErr.message);
+
+  request = (pending || []).find(function(r) { return String(r.id) === idRaw; });
+
+  if (!request) {
+    const { data: recent, error: rErr } = await sb
+      .from('wallet_requests')
+      .select('*')
+      .order('id', { ascending: false })
+      .limit(50);
+    if (rErr) throw new Error(rErr.message);
+    request = (recent || []).find(function(r) { return String(r.id) === idRaw; });
+  }
+
+  if (!request) throw new Error('Request not found: ' + idRaw);
+
+  const status = String(request.status || '').toLowerCase();
+  if (status !== 'pending') {
+    throw new Error('Request already processed: ' + request.status);
+  }
+
+  const amount = Number(request.amount || 0);
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error('Invalid amount');
+
+  const telegramId = String(request.telegram_id);
+  const reqType = String(request.type || request.request_type || '').toLowerCase();
+
+  const wallet = await getWallet(telegramId, request.user_name || 'Manager');
+  const balance = Number(wallet.balance || 0);
+
+  let newBalance = balance;
+  let totalDeposits = Number(wallet.total_deposits || 0);
+  let totalWithdrawals = Number(wallet.total_withdrawals || 0);
+
+  if (reqType === 'deposit') {
+    newBalance = balance + amount;
+    totalDeposits += amount;
+  } else if (reqType === 'withdrawal') {
+    if (balance < amount) throw new Error('Insufficient balance for withdrawal');
+    newBalance = balance - amount;
+    totalWithdrawals += amount;
+  } else {
+    throw new Error('Unknown request type: ' + reqType);
+  }
+
+  const { error: walletErr } = await sb
+    .from('user_wallets')
+    .update({
+      balance: newBalance,
+      total_deposits: totalDeposits,
+      total_withdrawals: totalWithdrawals
+    })
+    .eq('telegram_id', telegramId);
+
+  if (walletErr) throw walletErr;
+
+  const newStatus = reqType === 'withdrawal' ? 'paid' : 'approved';
+
+  // Update by matching the exact id value from the row we loaded
+  const { error: reqErr } = await sb
+    .from('wallet_requests')
+    .update({
+      status: newStatus,
+      processed_at: new Date().toISOString()
+    })
+    .eq('id', request.id)
+    .eq('status', 'pending');
+
+  if (reqErr) {
+    console.warn('status update by id failed, trying filter only status+telegram', reqErr.message);
+    // Last resort: update via telegram_id + amount + pending
+    await sb
+      .from('wallet_requests')
+      .update({ status: newStatus, processed_at: new Date().toISOString() })
+      .eq('telegram_id', telegramId)
+      .eq('status', 'pending')
+      .eq('amount', amount);
+  }
+
+  return {
+    telegram_id: telegramId,
+    amount: amount,
+    new_balance: newBalance,
+    type: reqType,
+    status: newStatus
+  };
 }
-
-/* =========================================================
-   REJECT REQUEST
-========================================================= */
 
 async function rejectRequest(requestId) {
   const sb = db();
+  const idRaw = String(requestId).trim();
 
-  const { data: request, error } = await sb
+  const { data: pending } = await sb
     .from('wallet_requests')
     .select('*')
-    .eq('id', requestId)
-    .single();
+    .eq('status', 'pending')
+    .limit(100);
 
-  if (error) throw error;
-
-  if (request.status !== 'pending') {
+  let request = (pending || []).find(function(r) { return String(r.id) === idRaw; });
+  if (!request) {
+    const { data: recent } = await sb
+      .from('wallet_requests')
+      .select('*')
+      .order('id', { ascending: false })
+      .limit(50);
+    request = (recent || []).find(function(r) { return String(r.id) === idRaw; });
+  }
+  if (!request) throw new Error('Request not found: ' + idRaw);
+  if (String(request.status || '').toLowerCase() !== 'pending') {
     throw new Error('Request already processed: ' + request.status);
   }
 
@@ -353,16 +471,12 @@ async function rejectRequest(requestId) {
       status: 'rejected',
       processed_at: new Date().toISOString()
     })
-    .eq('id', requestId)
+    .eq('id', request.id)
     .eq('status', 'pending');
 
   if (updateError) throw updateError;
   return request;
 }
-
-/* =========================================================
-   EDIT ADMIN MESSAGE
-========================================================= */
 
 async function updateAdminMessage(query, statusText) {
   if (!query.message) return;
@@ -546,6 +660,8 @@ module.exports = async function handler(req, res) {
     return res.status(200).end();
   }
 
+  console.log('Ha Fantasy API version: 2026-09-30-v5-join-dup');
+
   // HEALTH CHECK / GET WALLET
   if (req.method === 'GET') {
     const action = req.query && req.query.action;
@@ -618,6 +734,7 @@ module.exports = async function handler(req, res) {
       }
 
       if (data.type === 'DEPOSIT_SUBMISSION') {
+        await assertNoDuplicateReceipt(data.receipt || '', user.id);
         const request = await createWalletRequest({
           telegramId: user.id,
           userName: userLabel(user),
@@ -688,6 +805,10 @@ module.exports = async function handler(req, res) {
         }
       }
 
+      if (type === 'deposit') {
+        await assertNoDuplicateReceipt(update.receipt || '', user.id);
+      }
+
       const request = await createWalletRequest({
         telegramId: user.id,
         userName: [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Manager',
@@ -718,6 +839,35 @@ module.exports = async function handler(req, res) {
           ? 'Deposit request sent for approval.'
           : 'Withdrawal request sent for processing.'
       });
+    }
+
+    // SERVER-SIDE JOIN LEAGUE (Pay 100 ETB)
+    if (update.action === 'join_league') {
+      const initData = update.initData || '';
+      const user = verifyTelegramInitData(initData);
+      if (!user) {
+        return res.status(401).json({ ok: false, error: 'Invalid Telegram authentication' });
+      }
+      try {
+        const result = await joinLeagueServer(
+          user,
+          update.league,
+          update.gameweek || 1
+        );
+        return res.status(200).json({
+          ok: true,
+          already: !!result.already,
+          league: result.league,
+          balance: result.balance,
+          charged: result.charged || 0,
+          message: result.already
+            ? 'Already joined this league this week.'
+            : ('Joined ' + result.league + '. 100 ETB deducted.')
+        });
+      } catch (e) {
+        console.error('join_league error:', e);
+        return res.status(400).json({ ok: false, error: e.message || 'Join failed' });
+      }
     }
 
     // UNKNOWN POST
