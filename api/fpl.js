@@ -21,6 +21,7 @@ module.exports = async function handler(req, res) {
   let path = (req.query && req.query.path) || '/bootstrap-static/';
   path = String(path);
   if (!path.startsWith('/')) path = '/' + path;
+
   // Safety: only allow known FPL API prefixes
   if (!/^\/(bootstrap-static\/?|event\/\d+\/live\/?|fixtures\/?|element-summary\/\d+\/?)/.test(path)) {
     return res.status(400).json({ ok: false, error: 'path not allowed' });
@@ -48,8 +49,3 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ ok: false, error: e.message || 'proxy failed' });
   }
 };
-'''
-
-from pathlib import Path
-# file already written by tool
-print('ok')
