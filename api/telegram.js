@@ -14,7 +14,7 @@ const MINI_APP_URL = (
   'https://ha-fantasy.onrender.com'
 ).trim().replace(/\/+$/, '');
 
-const SUPPORT_USERNAME = (process.env.SUPPORT_USERNAME || '@Adimn_67').trim();
+const SUPPORT_USERNAME = (process.env.SUPPORT_USERNAME || '@Adimn67').trim();
 const SUPPORT_USERNAME_2 = (process.env.SUPPORT_USERNAME_2 || '@Sura_1136').trim();
 const CHANNEL_USERNAME = (process.env.CHANNEL_USERNAME || '@hafantasy').trim();
 const CHANNEL_URL = (process.env.CHANNEL_URL || 'https://t.me/hafantasy').trim();
