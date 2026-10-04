@@ -11,7 +11,7 @@ const TG_BASE = 'https://api.telegram.org/bot' + BOT_TOKEN;
 const MINI_APP_URL = (
   process.env.MINI_APP_URL ||
   process.env.WEBAPP_URL ||
-  'https://ha-fantasy-2324-us8p.vercel.app'
+  'https://ha-fantasy.onrender.com'
 ).trim().replace(/\/+$/, '');
 
 const SUPPORT_USERNAME = (process.env.SUPPORT_USERNAME || '@Adimn_67').trim();
