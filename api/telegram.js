@@ -7,6 +7,18 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const TG_BASE = 'https://api.telegram.org/bot' + BOT_TOKEN;
 
+// Mini App URL (Menu Button + keyboard web_app)
+const MINI_APP_URL = (
+  process.env.MINI_APP_URL ||
+  process.env.WEBAPP_URL ||
+  'https://ha-fantasy-2324-us8p.vercel.app'
+).trim().replace(/\/+$/, '');
+
+const SUPPORT_USERNAME = (process.env.SUPPORT_USERNAME || '@Adimn_67').trim();
+const SUPPORT_USERNAME_2 = (process.env.SUPPORT_USERNAME_2 || '@Sura_1136').trim();
+const CHANNEL_USERNAME = (process.env.CHANNEL_USERNAME || '@hafantasy').trim();
+const CHANNEL_URL = (process.env.CHANNEL_URL || 'https://t.me/hafantasy').trim();
+
 function db() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 }
@@ -57,6 +69,173 @@ function userLabel(user) {
   const username = user.username ? '@' + user.username : 'No username';
   return (name || 'Unknown') + ' (' + username + ')';
 }
+
+function mainReplyKeyboard() {
+  return {
+    keyboard: [
+      [
+        {
+          text: '⚽ Open HA Fantasy',
+          web_app: { url: MINI_APP_URL }
+        }
+      ],
+      [
+        { text: '📜 Rules' },
+        { text: '🏆 Contests' }
+      ],
+      [
+        { text: '💬 Support' },
+        { text: '📢 Channel' }
+      ]
+    ],
+    resize_keyboard: true,
+    is_persistent: true
+  };
+}
+
+async function ensureMenuButton() {
+  // Blue "Play" button bottom-left (same idea as Hahu)
+  try {
+    await tg('setChatMenuButton', {
+      menu_button: {
+        type: 'web_app',
+        text: 'Play',
+        web_app: { url: MINI_APP_URL }
+      }
+    });
+  } catch (e) {
+    console.warn('setChatMenuButton failed', e && e.message);
+  }
+}
+
+async function handleStart(msg) {
+  const chatId = msg.chat.id;
+  const first = (msg.from && msg.from.first_name) || 'Manager';
+
+  await ensureMenuButton();
+
+  await tg('sendMessage', {
+    chat_id: chatId,
+    text:
+      '⚽ *Welcome to HA Fantasy!*\n\n' +
+      'Build your Premier League squad and compete for real ETB prizes.\n\n' +
+      '✅ EPL live now\n' +
+      '🚧 UCL — Coming Soon\n\n' +
+      '• Entry: *100 ETB*\n' +
+      '• Deadline: *Sat 10 Oct, 14:30 EAT*\n' +
+      '• Max 3 players per club · 15-man squad\n\n' +
+      'Tap *Open HA Fantasy* or the *Play* button below.',
+    parse_mode: 'Markdown',
+    reply_markup: mainReplyKeyboard()
+  });
+
+  await tg('sendMessage', {
+    chat_id: chatId,
+    text: '🎮 Good luck, ' + first + '! Play bold.'
+  });
+}
+
+async function handleBotText(msg) {
+  const chatId = msg.chat.id;
+  const text = String(msg.text || '').trim();
+  const lower = text.toLowerCase();
+
+  if (lower === '/start' || lower.indexOf('/start') === 0) {
+    await handleStart(msg);
+    return true;
+  }
+
+  if (text === '📜 Rules' || lower === '/rules' || lower === 'rules') {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text:
+        '📋 *HA Fantasy scoring (FPL-style)*\n\n' +
+        '• Play under 60 min → 1 pt · 60+ → 2 pts\n' +
+        '• Goals: GK 10 · DEF 6 · MID 5 · FWD 4\n' +
+        '• Assists → 3 pts\n' +
+        '• Clean sheet: GK/DEF 4 · MID 1\n' +
+        '• Captain ×2 · Triple Captain ×3\n' +
+        '• Max 3 from same club\n\n' +
+        'Full rules are inside the app: *Profile → Scoring Rules*',
+      parse_mode: 'Markdown',
+      reply_markup: mainReplyKeyboard()
+    });
+    return true;
+  }
+
+  if (text === '🏆 Contests' || lower === '/contests') {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text:
+        '🏆 *This week*\n\n' +
+        'Premier League — *100 ETB* entry\n' +
+        'Lock: Sat 10 Oct, 14:30 EAT\n\n' +
+        'Open the app → *Contest* to join and see live rankings.',
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⚽ Open Contest', web_app: { url: MINI_APP_URL } }]
+        ]
+      }
+    });
+    return true;
+  }
+
+  if (text === '💬 Support' || lower === '/support' || lower === 'support') {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text:
+        '💬 *Support*\n\n' +
+        '• ' + SUPPORT_USERNAME + '\n' +
+        '• ' + SUPPORT_USERNAME_2 + '\n\n' +
+        'We usually reply within a few hours.\n' +
+        'For deposit issues, include your Telebirr SMS / receipt.',
+      parse_mode: 'Markdown',
+      reply_markup: mainReplyKeyboard()
+    });
+    return true;
+  }
+
+  if (text === '📢 Channel' || lower === '/channel') {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: '📢 Join the channel for deadlines & winners:\n' + CHANNEL_URL,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📢 Open @hafantasy', url: CHANNEL_URL }]
+        ]
+      }
+    });
+    return true;
+  }
+
+  if (lower === '/play' || lower === 'play') {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Open HA Fantasy:',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⚽ Launch App', web_app: { url: MINI_APP_URL } }]
+        ]
+      }
+    });
+    return true;
+  }
+
+  // Unknown text in private chat — gentle nudge
+  if (msg.chat && msg.chat.type === 'private') {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Use the buttons below or tap *Play* to open the app.',
+      parse_mode: 'Markdown',
+      reply_markup: mainReplyKeyboard()
+    });
+    return true;
+  }
+
+  return false;
+}
+
 
 async function getWallet(telegramId, userName) {
   const sb = db();
@@ -689,7 +868,7 @@ module.exports = async function handler(req, res) {
     return res.status(200).end();
   }
 
-  console.log('Ha Fantasy API version: 2026-09-30-v5-join-dup');
+  console.log('Ha Fantasy API version: 2026-10-04-v6-bot-menu');
 
   if (req.method === 'GET') {
     const action = req.query && req.query.action;
@@ -730,6 +909,16 @@ module.exports = async function handler(req, res) {
 
     if (update.callback_query) {
       await handleCallback(update.callback_query);
+      return res.status(200).json({ ok: true });
+    }
+
+    // Bot chat: /start + reply keyboard buttons (Hahu-style)
+    if (update.message && update.message.text) {
+      try {
+        await handleBotText(update.message);
+      } catch (e) {
+        console.error('handleBotText error:', e);
+      }
       return res.status(200).json({ ok: true });
     }
 
